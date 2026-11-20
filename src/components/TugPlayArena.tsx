@@ -471,6 +471,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
 
   const handleTestAiVoice = async () => {
     setAiVoiceError(null);
+    soundFx.unlock();
     setTestingAiVoice(true);
     try {
       const sampleText = resolveAlmostWinText(aiSoundConfig.messageTemplate, resolvedBlueLabel);
@@ -642,6 +643,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       setShowWinPopup(false);
       setAlmostWinAlertBanner(null);
       lastAlmostWinSideRef.current = null;
+      soundFx.unlock();
       soundFx.stopAiVoice();
 
       if (aiSoundConfig.enabled && !muted) {

@@ -2,11 +2,14 @@ class SoundEffects {
   private ctx: AudioContext | null = null;
   private muted = false;
   private activeVoiceAudio: HTMLAudioElement | null = null;
+  private activeVoiceSource: AudioBufferSourceNode | null = null;
 
   private getContext(): AudioContext | null {
     if (this.muted || typeof window === 'undefined') return null;
     if (!this.ctx) {
-      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (AudioCtx) {
         this.ctx = new AudioCtx();
       }
@@ -17,11 +20,36 @@ class SoundEffects {
     return this.ctx;
   }
 
+  public unlock() {
+    if (typeof window === 'undefined') return;
+    if (!this.ctx) {
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (AudioCtx) {
+        this.ctx = new AudioCtx();
+      }
+    }
+    if (this.ctx) {
+      if (this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+      try {
+        const buffer = this.ctx.createBuffer(1, 1, 22050);
+        const source = this.ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(this.ctx.destination);
+        source.start(0);
+      } catch {
+        // Ignore unlock errors
+      }
+    }
+  }
+
   public setMuted(muted: boolean) {
     this.muted = muted;
-    if (muted && this.activeVoiceAudio) {
-      this.activeVoiceAudio.pause();
-      this.activeVoiceAudio.currentTime = 0;
+    if (muted) {
+      this.stopAiVoice();
     }
   }
 
@@ -30,6 +58,15 @@ class SoundEffects {
   }
 
   public stopAiVoice() {
+    if (this.activeVoiceSource) {
+      try {
+        this.activeVoiceSource.stop();
+        this.activeVoiceSource.disconnect();
+      } catch {
+        // Ignore already stopped
+      }
+      this.activeVoiceSource = null;
+    }
     if (this.activeVoiceAudio) {
       this.activeVoiceAudio.pause();
       this.activeVoiceAudio.currentTime = 0;
@@ -40,13 +77,42 @@ class SoundEffects {
   public async playBase64Wav(base64Audio: string, mimeType = 'audio/wav'): Promise<void> {
     if (this.muted || typeof window === 'undefined' || !base64Audio) return;
     this.stopAiVoice();
-    try {
-      const byteCharacters = atob(base64Audio);
-      const byteNumbers = new Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
+
+    const byteCharacters = atob(base64Audio);
+    const byteArray = new Uint8Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteArray[i] = byteCharacters.charCodeAt(i);
+    }
+
+    const ctx = this.getContext();
+    if (ctx) {
+      try {
+        if (ctx.state === 'suspended') {
+          await ctx.resume();
+        }
+        const arrayBuf = byteArray.buffer.slice(
+          byteArray.byteOffset,
+          byteArray.byteOffset + byteArray.byteLength
+        );
+        const audioBuffer = await ctx.decodeAudioData(arrayBuf);
+        if (this.muted) return;
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(ctx.destination);
+        this.activeVoiceSource = source;
+        source.onended = () => {
+          if (this.activeVoiceSource === source) {
+            this.activeVoiceSource = null;
+          }
+        };
+        source.start(0);
+        return;
+      } catch {
+        // Fall back to HTMLAudioElement if decodeAudioData is unsupported
       }
-      const byteArray = new Uint8Array(byteNumbers);
+    }
+
+    try {
       const blob = new Blob([byteArray], { type: mimeType });
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);

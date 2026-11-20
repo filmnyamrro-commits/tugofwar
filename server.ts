@@ -23,6 +23,7 @@ function getGeminiClient(): GoogleGenAI | null {
   if (!apiKey) return null;
   return new GoogleGenAI({
     apiKey,
+    apiVersion: 'v1beta',
     httpOptions: {
       headers: {
         'User-Agent': 'aistudio-build',
