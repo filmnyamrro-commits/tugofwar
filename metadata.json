@@ -1,0 +1,8 @@
+{
+  "name": "Remix RopeSum",
+  "description": "Interactive tug-of-war formative assessment game for mastering addition facts 1 to 20 with real-time strategy diagnostics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
