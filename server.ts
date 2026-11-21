@@ -63,8 +63,9 @@ async function startServer() {
       const ai = getGeminiClient();
       if (!ai) {
         res.status(500).json({
+          code: 'MISSING_API_KEY',
           error:
-            'GEMINI_API_KEY is missing. Please configure it in the Settings > Secrets panel.',
+            'GEMINI_API_KEY is missing. Using built-in browser voice automatically.',
         });
         return;
       }
@@ -100,7 +101,8 @@ async function startServer() {
 
       if (!base64Audio) {
         res.status(502).json({
-          error: 'AI voice service did not return audio data. Please try again.',
+          code: 'EMPTY_AUDIO',
+          error: 'AI voice service did not return audio data. Using built-in browser voice.',
         });
         return;
       }
@@ -111,15 +113,33 @@ async function startServer() {
         voiceName: safeVoice,
       });
     } catch (err: unknown) {
-      const message =
+      const raw =
         err instanceof Error ? err.message : 'Failed to generate AI notification sound.';
-      const statusCode =
-        message.includes('API_KEY_INVALID') || message.includes('PERMISSION_DENIED')
-          ? 403
-          : message.includes('RESOURCE_EXHAUSTED')
-          ? 429
-          : 500;
-      res.status(statusCode).json({ error: message });
+      let extracted = raw;
+      try {
+        const parsed = JSON.parse(raw) as { error?: { message?: string } };
+        if (parsed?.error?.message) extracted = parsed.error.message;
+      } catch {
+        // Ignore parse error
+      }
+      const isQuota =
+        raw.includes('RESOURCE_EXHAUSTED') ||
+        raw.includes('429') ||
+        extracted.toLowerCase().includes('quota');
+      const isAuth =
+        raw.includes('API_KEY_INVALID') || raw.includes('PERMISSION_DENIED');
+      const statusCode = isAuth ? 403 : isQuota ? 429 : 500;
+      const code = isAuth
+        ? 'INVALID_API_KEY'
+        : isQuota
+        ? 'QUOTA_EXCEEDED'
+        : 'TTS_ERROR';
+      const friendly = isQuota
+        ? 'Gemini Cloud TTS quota reached for now. Using built-in browser voice automatically.'
+        : isAuth
+        ? 'Gemini API key is invalid or lacks TTS permission. Using built-in browser voice.'
+        : extracted;
+      res.status(statusCode).json({ error: friendly, code });
     }
   });
 

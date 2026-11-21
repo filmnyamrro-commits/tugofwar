@@ -3,6 +3,8 @@ class SoundEffects {
   private muted = false;
   private activeVoiceAudio: HTMLAudioElement | null = null;
   private activeVoiceSource: AudioBufferSourceNode | null = null;
+  private activeUtterance: SpeechSynthesisUtterance | null = null;
+  private speakDelayTimer: number | null = null;
 
   private getContext(): AudioContext | null {
     if (this.muted || typeof window === 'undefined') return null;
@@ -44,6 +46,13 @@ class SoundEffects {
         // Ignore unlock errors
       }
     }
+    if ('speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.getVoices();
+      } catch {
+        // Ignore speech synthesis restrictions
+      }
+    }
   }
 
   public setMuted(muted: boolean) {
@@ -58,6 +67,10 @@ class SoundEffects {
   }
 
   public stopAiVoice() {
+    if (this.speakDelayTimer !== null && typeof window !== 'undefined') {
+      window.clearTimeout(this.speakDelayTimer);
+      this.speakDelayTimer = null;
+    }
     if (this.activeVoiceSource) {
       try {
         this.activeVoiceSource.stop();
@@ -72,6 +85,7 @@ class SoundEffects {
       this.activeVoiceAudio.currentTime = 0;
       this.activeVoiceAudio = null;
     }
+    this.activeUtterance = null;
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
         window.speechSynthesis.cancel();
@@ -81,19 +95,111 @@ class SoundEffects {
     }
   }
 
-  public speakPhrase(text: string) {
+  public speakPhrase(
+    text: string,
+    options?: { queue?: boolean; voiceHint?: string }
+  ) {
     if (this.muted || typeof window === 'undefined' || !text.trim()) return;
     if (!('speechSynthesis' in window)) return;
     try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1.05;
-      utterance.pitch = 1.05;
-      utterance.volume = 0.95;
-      window.speechSynthesis.speak(utterance);
+      if (this.speakDelayTimer !== null) {
+        window.clearTimeout(this.speakDelayTimer);
+        this.speakDelayTimer = null;
+      }
+
+      const synth = window.speechSynthesis;
+      const shouldCancelFirst = !options?.queue && (synth.speaking || synth.pending);
+
+      const enqueueUtterance = () => {
+        if (this.muted) return;
+        const utterance = new SpeechSynthesisUtterance(text);
+        const voiceHint = options?.voiceHint;
+        if (voiceHint === 'Charon') {
+          utterance.pitch = 0.88;
+          utterance.rate = 0.98;
+        } else if (voiceHint === 'Fenrir') {
+          utterance.pitch = 0.94;
+          utterance.rate = 1.06;
+        } else if (voiceHint === 'Puck') {
+          utterance.pitch = 1.12;
+          utterance.rate = 1.08;
+        } else if (voiceHint === 'Zephyr') {
+          utterance.pitch = 1.08;
+          utterance.rate = 1.02;
+        } else {
+          utterance.pitch = 1.04;
+          utterance.rate = 1.05;
+        }
+        utterance.volume = 1.0;
+
+        const voices = synth.getVoices();
+        if (voices.length > 0) {
+          const enVoice =
+            voices.find((v) => v.lang.toLowerCase().startsWith('en') && v.localService) ||
+            voices.find((v) => v.lang.toLowerCase().startsWith('en')) ||
+            voices[0];
+          if (enVoice) {
+            utterance.voice = enVoice;
+          }
+        }
+
+        this.activeUtterance = utterance;
+        utterance.onend = () => {
+          if (this.activeUtterance === utterance) {
+            this.activeUtterance = null;
+          }
+        };
+        utterance.onerror = () => {
+          if (this.activeUtterance === utterance) {
+            this.activeUtterance = null;
+          }
+        };
+
+        try {
+          synth.resume();
+        } catch {
+          // Ignore resume errors
+        }
+        synth.speak(utterance);
+      };
+
+      if (shouldCancelFirst) {
+        synth.cancel();
+        // Chrome/Android often drops speak() called synchronously right after cancel()
+        this.speakDelayTimer = window.setTimeout(() => {
+          this.speakDelayTimer = null;
+          enqueueUtterance();
+        }, 35);
+      } else {
+        enqueueUtterance();
+      }
     } catch {
       // Ignore speech synthesis restrictions
     }
+  }
+
+  public playAlmostWinChime() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    const notes = [587.33, 783.99, 987.77];
+    const now = ctx.currentTime;
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      const start = now + idx * 0.085;
+      osc.frequency.setValueAtTime(freq, start);
+
+      gain.gain.setValueAtTime(0.001, start);
+      gain.gain.linearRampToValueAtTime(0.16, start + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.22);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.24);
+    });
   }
 
   public async playBase64Wav(base64Audio: string, mimeType = 'audio/wav'): Promise<void> {

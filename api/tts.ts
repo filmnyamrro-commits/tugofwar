@@ -21,17 +21,73 @@ const VOICE_STYLES: Record<string, string> = {
   Zephyr: 'Warm, enthusiastic, encouraging cheerleader',
 };
 
+function parseGeminiError(err: unknown): {
+  statusCode: number;
+  code: string;
+  message: string;
+} {
+  const raw =
+    err instanceof Error ? err.message : 'Failed to generate AI notification sound.';
+  let extracted = raw;
+  try {
+    const parsed = JSON.parse(raw) as {
+      error?: { message?: string; status?: string; code?: number };
+    };
+    if (parsed?.error?.message) {
+      extracted = parsed.error.message;
+    }
+  } catch {
+    // Raw message is already plain text
+  }
+
+  if (
+    raw.includes('RESOURCE_EXHAUSTED') ||
+    raw.includes('429') ||
+    extracted.toLowerCase().includes('quota')
+  ) {
+    return {
+      statusCode: 429,
+      code: 'QUOTA_EXCEEDED',
+      message:
+        'Gemini Cloud TTS quota reached for now. Using built-in browser voice automatically.',
+    };
+  }
+  if (raw.includes('API_KEY_INVALID') || raw.includes('PERMISSION_DENIED')) {
+    return {
+      statusCode: 403,
+      code: 'INVALID_API_KEY',
+      message:
+        'Gemini API key is invalid or lacks TTS permission. Using built-in browser voice.',
+    };
+  }
+  return {
+    statusCode: 500,
+    code: 'TTS_ERROR',
+    message: extracted,
+  };
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Allow', 'POST, OPTIONS');
+    res.status(200).json({ ok: true });
+    return;
+  }
+
   if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    res.status(405).json({ error: 'Method not allowed.' });
+    res.setHeader('Allow', 'POST, OPTIONS');
+    res.status(405).json({ error: 'Method not allowed.', code: 'METHOD_NOT_ALLOWED' });
     return;
   }
 
   try {
-    const rawBody =
-      typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body ?? {});
-    const body = rawBody as {
+    let rawBody: unknown = req.body ?? {};
+    if (typeof req.body === 'string') {
+      rawBody = JSON.parse(req.body || '{}');
+    } else if (Buffer.isBuffer(req.body)) {
+      rawBody = JSON.parse(req.body.toString('utf8') || '{}');
+    }
+    const body = (rawBody ?? {}) as {
       text?: unknown;
       voiceName?: unknown;
       style?: unknown;
@@ -39,7 +95,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const rawText = typeof body.text === 'string' ? body.text.trim() : '';
     if (!rawText) {
-      res.status(400).json({ error: 'Notification text cannot be empty.' });
+      res
+        .status(400)
+        .json({ error: 'Notification text cannot be empty.', code: 'EMPTY_TEXT' });
       return;
     }
     const safeText = rawText.slice(0, 240);
@@ -55,8 +113,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       res.status(500).json({
+        code: 'MISSING_API_KEY',
         error:
-          'GEMINI_API_KEY is missing. Please configure it in your environment secrets.',
+          'GEMINI_API_KEY is not configured in Vercel environment variables. Using built-in browser voice.',
       });
       return;
     }
@@ -102,7 +161,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (!base64Audio) {
       res.status(502).json({
-        error: 'AI voice service did not return audio data. Please try again.',
+        code: 'EMPTY_AUDIO',
+        error: 'AI voice service did not return audio data. Using built-in browser voice.',
       });
       return;
     }
@@ -113,14 +173,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       voiceName: safeVoice,
     });
   } catch (err: unknown) {
-    const message =
-      err instanceof Error ? err.message : 'Failed to generate AI notification sound.';
-    const statusCode =
-      message.includes('API_KEY_INVALID') || message.includes('PERMISSION_DENIED')
-        ? 403
-        : message.includes('RESOURCE_EXHAUSTED')
-        ? 429
-        : 500;
-    res.status(statusCode).json({ error: message });
+    const parsed = parseGeminiError(err);
+    res.status(parsed.statusCode).json({ error: parsed.message, code: parsed.code });
   }
 }

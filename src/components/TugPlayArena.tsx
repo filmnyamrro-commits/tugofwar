@@ -607,7 +607,12 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   const ttsInFlightRef = useRef<
     Map<string, Promise<{ audioBase64: string; mimeType: string } | null>>
   >(new Map());
+  const ttsMissingKeyRef = useRef<boolean>(false);
+  const ttsCooldownUntilRef = useRef<number>(0);
   const lastAlmostWinSideRef = useRef<'BLUE' | 'CORAL' | null>(null);
+  const phaseRef = useRef<GamePhase>('TITLE_MENU');
+  const mutedRef = useRef<boolean>(false);
+  const almostWinTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     try {
@@ -631,15 +636,35 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
     }
   }, [congratsAudio]);
 
+  useEffect(() => {
+    phaseRef.current = phase;
+    if (phase !== 'PLAYING' && almostWinTimerRef.current !== null) {
+      window.clearTimeout(almostWinTimerRef.current);
+      almostWinTimerRef.current = null;
+    }
+  }, [phase]);
+
+  useEffect(() => {
+    mutedRef.current = muted;
+  }, [muted]);
+
   const fetchAiVoiceAudio = useCallback(
     async (
       text: string,
       voiceName: AiVoiceName,
-      surfaceErrors = false
+      surfaceErrors = false,
+      allowRetryIfCooling = false
     ): Promise<{ audioBase64: string; mimeType: string } | null> => {
       const cacheKey = `${voiceName}::${text}`;
       const cached = ttsCacheRef.current.get(cacheKey);
       if (cached) return cached;
+
+      if (
+        !allowRetryIfCooling &&
+        (ttsMissingKeyRef.current || Date.now() < ttsCooldownUntilRef.current)
+      ) {
+        return null;
+      }
 
       const existing = ttsInFlightRef.current.get(cacheKey);
       if (existing) return existing;
@@ -655,12 +680,26 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
             audioBase64?: string;
             mimeType?: string;
             error?: string;
+            code?: string;
           };
           if (!res.ok || !data.audioBase64) {
-            const errMsg = data.error || 'Failed to generate AI voice sound.';
+            if (
+              data.code === 'MISSING_API_KEY' ||
+              data.code === 'INVALID_API_KEY' ||
+              res.status === 404
+            ) {
+              ttsMissingKeyRef.current = true;
+            } else if (res.status === 429 || data.code === 'QUOTA_EXCEEDED') {
+              ttsCooldownUntilRef.current = Date.now() + 60_000;
+            }
+            const errMsg =
+              data.error ||
+              'Cloud AI voice unavailable — playing built-in browser voice instead.';
             if (surfaceErrors) setAiVoiceError(errMsg);
             return null;
           }
+          ttsMissingKeyRef.current = false;
+          ttsCooldownUntilRef.current = 0;
           const clip = {
             audioBase64: data.audioBase64,
             mimeType: data.mimeType || 'audio/wav',
@@ -669,7 +708,9 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
           return clip;
         } catch {
           if (surfaceErrors) {
-            setAiVoiceError('Could not reach the AI voice server. Please try again.');
+            setAiVoiceError(
+              'Cloud AI voice server unreachable — playing built-in browser voice instead.'
+            );
           }
           return null;
         } finally {
@@ -697,7 +738,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       if (cached) {
         void soundFx.playBase64Wav(cached.audioBase64, cached.mimeType);
       } else {
-        soundFx.speakPhrase(spokenText);
+        soundFx.speakPhrase(spokenText, { voiceHint: aiSoundConfig.voiceName });
         void fetchAiVoiceAudio(spokenText, aiSoundConfig.voiceName, false);
       }
     },
@@ -711,21 +752,20 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
     ]
   );
 
-  // Pre-warm personalized voice clips for the active and next player on each turn
+  // Pre-warm personalized voice clips conservatively for the active player on each turn
   useEffect(() => {
     if (phase !== 'PLAYING' || !aiSoundConfig.answerFeedbackEnabled || muted) return;
+    if (ttsMissingKeyRef.current || Date.now() < ttsCooldownUntilRef.current) return;
 
     const namesToWarm = new Set<string>();
     const bLen = resolvedBluePlayers.length;
     if (bLen > 0) {
       namesToWarm.add(resolvedBluePlayers[blueTurnIndex % bLen]);
-      namesToWarm.add(resolvedBluePlayers[(blueTurnIndex + 1) % bLen]);
     }
     if (mode === 'DUEL_2P') {
       const cLen = resolvedCoralPlayers.length;
       if (cLen > 0) {
         namesToWarm.add(resolvedCoralPlayers[coralTurnIndex % cLen]);
-        namesToWarm.add(resolvedCoralPlayers[(coralTurnIndex + 1) % cLen]);
       }
     }
 
@@ -757,16 +797,19 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   const handleTestAiVoice = async () => {
     setAiVoiceError(null);
     soundFx.unlock();
+    if (muted) {
+      setMuted(false);
+      soundFx.setMuted(false);
+    }
     setTestingAiVoice(true);
     try {
       const sampleText = resolveAlmostWinText(aiSoundConfig.messageTemplate, resolvedBlueLabel);
-      const clip = await fetchAiVoiceAudio(sampleText, aiSoundConfig.voiceName, true);
+      soundFx.playAlmostWinChime();
+      const clip = await fetchAiVoiceAudio(sampleText, aiSoundConfig.voiceName, true, true);
       if (clip) {
-        if (muted) {
-          setMuted(false);
-          soundFx.setMuted(false);
-        }
         await soundFx.playBase64Wav(clip.audioBase64, clip.mimeType);
+      } else {
+        soundFx.speakPhrase(sampleText, { voiceHint: aiSoundConfig.voiceName });
       }
     } finally {
       setTestingAiVoice(false);
@@ -788,11 +831,11 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
         setMuted(false);
         soundFx.setMuted(false);
       }
-      const clip = await fetchAiVoiceAudio(spokenText, aiSoundConfig.voiceName, true);
+      const clip = await fetchAiVoiceAudio(spokenText, aiSoundConfig.voiceName, true, true);
       if (clip) {
         await soundFx.playBase64Wav(clip.audioBase64, clip.mimeType);
       } else {
-        soundFx.speakPhrase(spokenText);
+        soundFx.speakPhrase(spokenText, { voiceHint: aiSoundConfig.voiceName });
       }
     } finally {
       setTestingFeedbackKind(null);
@@ -981,17 +1024,42 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
     setAlmostWinAlertBanner({ team: almostSide, text: spokenText });
 
     if (aiSoundConfig.enabled && !muted) {
-      let cancelled = false;
-      fetchAiVoiceAudio(spokenText, aiSoundConfig.voiceName, false).then((clip) => {
-        if (!cancelled && clip) {
-          soundFx.playBase64Wav(clip.audioBase64, clip.mimeType);
-        }
-      });
-      return () => {
-        cancelled = true;
-      };
+      soundFx.playAlmostWinChime();
+      const voiceName = aiSoundConfig.voiceName;
+      const cacheKey = `${voiceName}::${spokenText}`;
+      const cached = ttsCacheRef.current.get(cacheKey);
+      const delayMs = aiSoundConfig.answerFeedbackEnabled ? 700 : 80;
+
+      if (almostWinTimerRef.current !== null) {
+        window.clearTimeout(almostWinTimerRef.current);
+      }
+
+      if (cached) {
+        almostWinTimerRef.current = window.setTimeout(() => {
+          almostWinTimerRef.current = null;
+          if (phaseRef.current !== 'PLAYING' || mutedRef.current) return;
+          void soundFx.playBase64Wav(cached.audioBase64, cached.mimeType);
+        }, delayMs);
+      } else {
+        almostWinTimerRef.current = window.setTimeout(() => {
+          almostWinTimerRef.current = null;
+          if (phaseRef.current !== 'PLAYING' || mutedRef.current) return;
+          void fetchAiVoiceAudio(spokenText, voiceName, false).then((clip) => {
+            if (phaseRef.current !== 'PLAYING' || mutedRef.current) return;
+            if (clip) {
+              void soundFx.playBase64Wav(clip.audioBase64, clip.mimeType);
+            } else {
+              soundFx.speakPhrase(spokenText, {
+                queue: true,
+                voiceHint: voiceName,
+              });
+            }
+          });
+        }, delayMs);
+      }
     }
   }, [
+    aiSoundConfig.answerFeedbackEnabled,
     aiSoundConfig.enabled,
     aiSoundConfig.messageTemplate,
     aiSoundConfig.voiceName,
@@ -1187,6 +1255,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       if (phase !== 'PLAYING' || isPaused || soloFeedback !== null) return;
       const choice: QuestionChoice | undefined = blueQuestion.choices[choiceIdx];
       if (!choice) return;
+      soundFx.unlock();
 
       const now = Date.now();
       const responseTimeMs = Math.max(150, now - blueStartRef.current);
@@ -1357,6 +1426,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       const question = player === 'BLUE' ? blueQuestion : coralQuestion;
       const choice = question.choices[choiceIdx];
       if (!choice) return;
+      soundFx.unlock();
 
       const startTime = player === 'BLUE' ? blueStartRef.current : coralStartRef.current;
       const responseTimeMs = Math.max(150, now - startTime);
@@ -2334,7 +2404,9 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                 </div>
 
                 {aiVoiceError && (
-                  <p className="text-xs font-medium text-rose-700">{aiVoiceError}</p>
+                  <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">
+                    {aiVoiceError}
+                  </p>
                 )}
               </div>
 
