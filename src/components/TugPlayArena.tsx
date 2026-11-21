@@ -51,6 +51,11 @@ import {
   summarizeAttempts,
 } from '../utils/mathEngine';
 import { parseImportedQuestionsJson } from '../utils/cloudSync';
+import {
+  loadWinnerCongratsAudio,
+  saveWinnerCongratsAudio,
+  type StoredAudioClip,
+} from '../utils/audioStorage';
 import { soundFx } from '../utils/soundFx';
 import { TugArenaSvg } from './TugArenaSvg';
 import { TenFrameHint } from './TenFrameHint';
@@ -79,16 +84,12 @@ const BOT_INTERVAL_MS: Record<BotDifficulty, number> = {
 const TEAMS_STORAGE_KEY = 'ropesum_teams_v1';
 const AI_SOUND_STORAGE_KEY = 'ropesum_ai_sound_v1';
 const ARENA_BG_STORAGE_KEY = 'ropesum_arena_bg_v1';
-const CONGRATS_AUDIO_STORAGE_KEY = 'ropesum_congrats_audio_v1';
-const MAX_CONGRATS_AUDIO_BYTES = 4 * 1024 * 1024;
+const MAX_CONGRATS_AUDIO_BYTES = 10 * 1024 * 1024;
+const MAX_TEAM_PLAYERS = 10;
 
 type AiVoiceName = 'Kore' | 'Puck' | 'Fenrir' | 'Charon' | 'Zephyr';
 type CongratsAudioMode = 'AI_VOICE' | 'UPLOADED_AUDIO' | 'CHIME_ONLY';
-
-interface SavedCongratsAudio {
-  name: string;
-  dataUrl: string;
-}
+type SavedCongratsAudio = StoredAudioClip;
 
 interface AiSoundConfig {
   enabled: boolean;
@@ -301,8 +302,8 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       const raw = localStorage.getItem(TEAMS_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as Partial<SavedTeamsState>;
-        const bCount = Math.max(1, Math.min(6, parsed.blueCount ?? 3));
-        const cCount = Math.max(1, Math.min(6, parsed.coralCount ?? 3));
+        const bCount = Math.max(1, Math.min(MAX_TEAM_PLAYERS, parsed.blueCount ?? 3));
+        const cCount = Math.max(1, Math.min(MAX_TEAM_PLAYERS, parsed.coralCount ?? 3));
         return {
           blueTeamName: parsed.blueTeamName || 'Team Blue',
           blueCount: bCount,
@@ -340,7 +341,10 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   }, [teamsState]);
 
   const updateBlueCount = (rawCount: number) => {
-    const count = Math.max(1, Math.min(6, Number.isNaN(rawCount) ? 1 : rawCount));
+    const count = Math.max(
+      1,
+      Math.min(MAX_TEAM_PLAYERS, Number.isNaN(rawCount) ? 1 : rawCount)
+    );
     setTeamsState((prev) => ({
       ...prev,
       blueCount: count,
@@ -350,7 +354,10 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   };
 
   const updateCoralCount = (rawCount: number) => {
-    const count = Math.max(1, Math.min(6, Number.isNaN(rawCount) ? 1 : rawCount));
+    const count = Math.max(
+      1,
+      Math.min(MAX_TEAM_PLAYERS, Number.isNaN(rawCount) ? 1 : rawCount)
+    );
     setTeamsState((prev) => ({
       ...prev,
       coralCount: count,
@@ -575,23 +582,8 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
     };
   });
 
-  const [congratsAudio, setCongratsAudio] = useState<SavedCongratsAudio | null>(() => {
-    try {
-      const raw = localStorage.getItem(CONGRATS_AUDIO_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as Partial<SavedCongratsAudio>;
-        if (typeof parsed.dataUrl === 'string' && parsed.dataUrl.startsWith('data:audio/')) {
-          return {
-            name: typeof parsed.name === 'string' && parsed.name ? parsed.name : 'Custom Audio',
-            dataUrl: parsed.dataUrl,
-          };
-        }
-      }
-    } catch {
-      // Ignore
-    }
-    return null;
-  });
+  const [congratsAudio, setCongratsAudio] = useState<SavedCongratsAudio | null>(null);
+  const congratsAudioHydratedRef = useRef<boolean>(false);
 
   const [testingAiVoice, setTestingAiVoice] = useState<boolean>(false);
   const [testingFeedbackKind, setTestingFeedbackKind] = useState<'CORRECT' | 'WRONG' | null>(null);
@@ -615,6 +607,20 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   const almostWinTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
+    let active = true;
+    void loadWinnerCongratsAudio().then((loaded) => {
+      if (!active) return;
+      congratsAudioHydratedRef.current = true;
+      if (loaded) {
+        setCongratsAudio(loaded);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     try {
       localStorage.setItem(AI_SOUND_STORAGE_KEY, JSON.stringify(aiSoundConfig));
     } catch {
@@ -623,17 +629,14 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   }, [aiSoundConfig]);
 
   useEffect(() => {
-    try {
-      if (congratsAudio) {
-        localStorage.setItem(CONGRATS_AUDIO_STORAGE_KEY, JSON.stringify(congratsAudio));
-      } else {
-        localStorage.removeItem(CONGRATS_AUDIO_STORAGE_KEY);
+    if (!congratsAudioHydratedRef.current) return;
+    void saveWinnerCongratsAudio(congratsAudio).then((ok) => {
+      if (!ok && congratsAudio) {
+        setCongratsAudioError(
+          'Audio loaded for this session, but browser storage could not persist the file.'
+        );
       }
-    } catch {
-      setCongratsAudioError(
-        'Audio loaded for this session, but it exceeded browser storage quota for auto-saving.'
-      );
-    }
+    });
   }, [congratsAudio]);
 
   useEffect(() => {
@@ -912,14 +915,19 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
         setTestingCongratsAudio(true);
       }
       try {
-        const clip = await fetchAiVoiceAudio(spokenText, aiSoundConfig.voiceName, false);
+        const clip = await fetchAiVoiceAudio(
+          spokenText,
+          aiSoundConfig.voiceName,
+          false,
+          surfaceErrors
+        );
         if (clip) {
           await soundFx.playBase64Wav(clip.audioBase64, clip.mimeType);
         } else {
           if (surfaceErrors) {
-            setCongratsAudioError('AI voice server unavailable — played browser voice fallback.');
+            setCongratsAudioError('Cloud AI voice unavailable — playing built-in browser voice.');
           }
-          soundFx.speakPhrase(spokenText);
+          soundFx.speakPhrase(spokenText, { voiceHint: aiSoundConfig.voiceName });
         }
       } finally {
         if (surfaceErrors) {
@@ -942,13 +950,13 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
     setCongratsAudioError(null);
     const isAudio =
       file.type.startsWith('audio/') ||
-      /\.(mp3|wav|ogg|m4a|aac|webm|flac)$/i.test(file.name);
+      /\.(mp3|wav|ogg|m4a|aac|webm|flac|mp4)$/i.test(file.name);
     if (!isAudio) {
       setCongratsAudioError('Please upload an audio file (.mp3, .wav, .m4a, .ogg, or .webm).');
       return;
     }
     if (file.size > MAX_CONGRATS_AUDIO_BYTES) {
-      setCongratsAudioError('Audio file is too large (max 4 MB). Please pick a shorter clip.');
+      setCongratsAudioError('Audio file is too large (max 10 MB). Please pick a shorter clip.');
       return;
     }
 
@@ -959,6 +967,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
         setCongratsAudioError('Could not read that audio file. Please try another file.');
         return;
       }
+      congratsAudioHydratedRef.current = true;
       const nextAudio: SavedCongratsAudio = { name: file.name, dataUrl: result };
       setCongratsAudio(nextAudio);
       setAiSoundConfig((prev) => ({ ...prev, congratsMode: 'UPLOADED_AUDIO' }));
@@ -1755,13 +1764,13 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
             <div className="border-t border-slate-100 pt-5">
               <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
                 <Users className="h-4 w-4 text-blue-600" />
-                <span>Teams &amp; Players Roster (1–6 Players per Team)</span>
+                <span>Teams &amp; Players Roster (1–10 Players per Team)</span>
               </div>
 
               <div className="mt-3 grid gap-4 sm:grid-cols-2">
                 {/* Team Blue Roster */}
                 <div className="rounded-lg border border-blue-200 bg-blue-50/30 p-4 space-y-3">
-                  <div className="grid grid-cols-[1fr_92px] gap-2">
+                  <div className="grid grid-cols-[1fr_118px] gap-2">
                     <div>
                       <label className="block text-[11px] font-semibold text-blue-900">
                         Left Team Name
@@ -1778,16 +1787,36 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                     </div>
                     <div>
                       <label className="block text-[11px] font-semibold text-blue-900">
-                        Players
+                        Players (1–10)
                       </label>
-                      <input
-                        type="number"
-                        min={1}
-                        max={6}
-                        value={teamsState.blueCount}
-                        onChange={(e) => updateBlueCount(parseInt(e.target.value, 10))}
-                        className="mt-1 w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-center font-mono text-sm font-bold tabular-nums text-slate-900 focus:border-blue-600 focus:outline-none"
-                      />
+                      <div className="mt-1 flex items-center overflow-hidden rounded-md border border-slate-200 bg-white">
+                        <button
+                          type="button"
+                          onClick={() => updateBlueCount(teamsState.blueCount - 1)}
+                          disabled={teamsState.blueCount <= 1}
+                          aria-label="Decrease left team players"
+                          className="px-2 py-1.5 text-sm font-bold text-slate-600 hover:bg-slate-100 disabled:opacity-40"
+                        >
+                          −
+                        </button>
+                        <input
+                          type="number"
+                          min={1}
+                          max={MAX_TEAM_PLAYERS}
+                          value={teamsState.blueCount}
+                          onChange={(e) => updateBlueCount(parseInt(e.target.value, 10))}
+                          className="w-full min-w-0 bg-white py-1.5 text-center font-mono text-sm font-bold tabular-nums text-slate-900 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => updateBlueCount(teamsState.blueCount + 1)}
+                          disabled={teamsState.blueCount >= MAX_TEAM_PLAYERS}
+                          aria-label="Increase left team players"
+                          className="px-2 py-1.5 text-sm font-bold text-blue-700 hover:bg-blue-50 disabled:opacity-40"
+                        >
+                          +
+                        </button>
+                      </div>
                     </div>
                   </div>
 
@@ -1870,7 +1899,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
 
                 {/* Team Coral Roster */}
                 <div className="rounded-lg border border-rose-200 bg-rose-50/30 p-4 space-y-3">
-                  <div className="grid grid-cols-[1fr_92px] gap-2">
+                  <div className="grid grid-cols-[1fr_118px] gap-2">
                     <div>
                       <label className="block text-[11px] font-semibold text-rose-900">
                         Right Team Name
@@ -1887,16 +1916,36 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                     </div>
                     <div>
                       <label className="block text-[11px] font-semibold text-rose-900">
-                        Players
+                        Players (1–10)
                       </label>
-                      <input
-                        type="number"
-                        min={1}
-                        max={6}
-                        value={teamsState.coralCount}
-                        onChange={(e) => updateCoralCount(parseInt(e.target.value, 10))}
-                        className="mt-1 w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-center font-mono text-sm font-bold tabular-nums text-slate-900 focus:border-rose-600 focus:outline-none"
-                      />
+                      <div className="mt-1 flex items-center overflow-hidden rounded-md border border-slate-200 bg-white">
+                        <button
+                          type="button"
+                          onClick={() => updateCoralCount(teamsState.coralCount - 1)}
+                          disabled={teamsState.coralCount <= 1}
+                          aria-label="Decrease right team players"
+                          className="px-2 py-1.5 text-sm font-bold text-slate-600 hover:bg-slate-100 disabled:opacity-40"
+                        >
+                          −
+                        </button>
+                        <input
+                          type="number"
+                          min={1}
+                          max={MAX_TEAM_PLAYERS}
+                          value={teamsState.coralCount}
+                          onChange={(e) => updateCoralCount(parseInt(e.target.value, 10))}
+                          className="w-full min-w-0 bg-white py-1.5 text-center font-mono text-sm font-bold tabular-nums text-slate-900 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => updateCoralCount(teamsState.coralCount + 1)}
+                          disabled={teamsState.coralCount >= MAX_TEAM_PLAYERS}
+                          aria-label="Increase right team players"
+                          className="px-2 py-1.5 text-sm font-bold text-rose-700 hover:bg-rose-50 disabled:opacity-40"
+                        >
+                          +
+                        </button>
+                      </div>
                     </div>
                   </div>
 
@@ -2558,17 +2607,91 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                 </div>
               </div>
 
-              {/* Congratulation Pop-Up Sound (Match Victory) */}
+              {/* Winner Celebration Audio (Upload Audio or AI Voice) */}
               <div className="mt-5 border-t border-slate-100 pt-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800">
                       <Trophy className="h-3.5 w-3.5 text-amber-500" />
-                      Congratulation Pop-Up Audio (Match Winner)
+                      Winner Celebration Audio (Congratulation Pop-Up)
                     </div>
                     <p className="mt-0.5 text-[11px] text-slate-500">
-                      Choose a customizable AI congratulation voice or upload your own celebration audio file.
+                      Upload a celebration audio clip (MP3, WAV, M4A, OGG up to 10 MB) or choose customizable AI Voice.
                     </p>
+                  </div>
+                </div>
+
+                {/* Always-visible Quick Upload Audio Bar */}
+                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50/50 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0 text-xs text-slate-700">
+                      <Music className="h-4 w-4 text-amber-600 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="font-semibold text-slate-900 truncate max-w-[240px]">
+                          {congratsAudio
+                            ? `Uploaded: ${congratsAudio.name}`
+                            : 'Custom Winner Audio (Optional)'}
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {congratsAudio
+                            ? aiSoundConfig.congratsMode === 'UPLOADED_AUDIO'
+                              ? 'Active — plays automatically when a team wins'
+                              : 'Saved — switch to "Upload Audio File" to use on win'
+                            : 'Upload applause, fanfare, or voice recording (max 10 MB)'}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-50">
+                        <Upload className="h-3.5 w-3.5" />
+                        {congratsAudio ? 'Replace Audio' : 'Upload Winner Audio'}
+                        <input
+                          type="file"
+                          accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.webm,.flac"
+                          className="sr-only"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            handleCongratsAudioUpload(file, true);
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                      {congratsAudio && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              soundFx.unlock();
+                              if (muted) {
+                                setMuted(false);
+                                soundFx.setMuted(false);
+                              }
+                              void soundFx.playDataUrlAudio(congratsAudio.dataUrl);
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                          >
+                            <Volume2 className="h-3.5 w-3.5 text-blue-600" />
+                            Play
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => soundFx.stopAiVoice()}
+                            className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                          >
+                            <Square className="h-3 w-3" />
+                            Stop
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleClearCongratsAudio}
+                            className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Remove
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -2576,7 +2699,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                   {(
                     [
                       { id: 'AI_VOICE', label: 'AI Voice Congrats' },
-                      { id: 'UPLOADED_AUDIO', label: 'Upload Audio File' },
+                      { id: 'UPLOADED_AUDIO', label: 'Use Uploaded Audio' },
                       { id: 'CHIME_ONLY', label: 'Fanfare Chime Only' },
                     ] as const
                   ).map((opt) => {
@@ -2670,65 +2793,6 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                   </div>
                 )}
 
-                {aiSoundConfig.congratsMode === 'UPLOADED_AUDIO' && (
-                  <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50/40 p-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 text-xs text-slate-700">
-                        <Music className="h-4 w-4 text-amber-600 shrink-0" />
-                        <span className="font-medium truncate max-w-[240px]">
-                          {congratsAudio ? congratsAudio.name : 'No audio uploaded yet'}
-                        </span>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-amber-900 hover:bg-amber-50">
-                          <Upload className="h-3 w-3" />
-                          {congratsAudio ? 'Replace Audio' : 'Upload Audio'}
-                          <input
-                            type="file"
-                            accept="audio/*"
-                            className="sr-only"
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              handleCongratsAudioUpload(file, true);
-                              e.target.value = '';
-                            }}
-                          />
-                        </label>
-                        {congratsAudio && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                void playVictoryCelebration({
-                                  teamLabel: resolvedBlueLabel,
-                                  players: resolvedBluePlayers,
-                                  blueScore: maxSteps,
-                                  coralScore: Math.max(0, maxSteps - 2),
-                                  isBlueWin: true,
-                                  forceUnmute: true,
-                                  surfaceErrors: true,
-                                })
-                              }
-                              className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
-                            >
-                              <Volume2 className="h-3 w-3 text-blue-600" />
-                              Play
-                            </button>
-                            <button
-                              type="button"
-                              onClick={handleClearCongratsAudio}
-                              className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-white px-2 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-50"
-                            >
-                              <Trash2 className="h-3 w-3" />
-                              Remove
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
                 {congratsAudioError && (
                   <p className="mt-2 text-xs font-medium text-rose-700">{congratsAudioError}</p>
                 )}
@@ -2755,6 +2819,16 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                   <strong className="text-slate-900">AI Sound Alert:</strong>{' '}
                   <span>
                     {aiSoundConfig.enabled ? `${aiSoundConfig.voiceName} voice` : 'Off'}
+                  </span>
+                </div>
+                <div>
+                  <strong className="text-slate-900">Winner Audio:</strong>{' '}
+                  <span>
+                    {aiSoundConfig.congratsMode === 'UPLOADED_AUDIO' && congratsAudio
+                      ? `Uploaded (${congratsAudio.name})`
+                      : aiSoundConfig.congratsMode === 'CHIME_ONLY'
+                      ? 'Fanfare Chime'
+                      : `AI Voice (${aiSoundConfig.voiceName})`}
                   </span>
                 </div>
                 <div>
@@ -3093,7 +3167,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                             {congratsAudio ? congratsAudio.name : 'No audio file uploaded'}
                           </div>
                           <div className="text-[10px] text-slate-500">
-                            MP3, WAV, M4A, OGG (max 4 MB)
+                            MP3, WAV, M4A, OGG (max 10 MB)
                           </div>
                         </div>
                       </div>
@@ -3103,7 +3177,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                           {congratsAudio ? 'Change Audio' : 'Upload Audio'}
                           <input
                             type="file"
-                            accept="audio/*"
+                            accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.webm,.flac"
                             className="sr-only"
                             onChange={(e) => {
                               const file = e.target.files?.[0];
@@ -3130,6 +3204,31 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                     <p className="mt-2.5 text-[11px] text-slate-500">
                       Plays the classic victory fanfare chime when a team wins.
                     </p>
+                  )}
+
+                  {/* Quick Upload Winner Audio Shortcut directly on the Pop-up */}
+                  {aiSoundConfig.congratsMode !== 'UPLOADED_AUDIO' && (
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200/80 pt-2.5">
+                      <span className="text-[11px] text-slate-500">
+                        {congratsAudio
+                          ? `Saved audio: ${congratsAudio.name}`
+                          : 'Or use your own celebration audio file:'}
+                      </span>
+                      <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-900 hover:bg-amber-100">
+                        <Upload className="h-3 w-3" />
+                        {congratsAudio ? 'Upload / Replace Audio' : 'Upload Winner Audio'}
+                        <input
+                          type="file"
+                          accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.webm,.flac"
+                          className="sr-only"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            handleCongratsAudioUpload(file, true);
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                    </div>
                   )}
 
                   {congratsAudioError && (

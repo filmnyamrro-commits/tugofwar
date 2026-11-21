@@ -23,17 +23,27 @@ function truncateName(name: string, maxLen = 10): string {
   return trimmed.length > maxLen ? `${trimmed.slice(0, maxLen - 1)}…` : trimmed;
 }
 
+function getTeamSpacing(count: number): number {
+  if (count <= 3) return 62;
+  if (count === 4) return 54;
+  if (count <= 6) return 46;
+  if (count === 7) return 42;
+  if (count === 8) return 38;
+  if (count === 9) return 35;
+  return 32;
+}
+
 function getBluePositions(count: number): number[] {
-  const safeCount = Math.max(1, Math.min(6, count));
-  const anchorRight = 405;
-  const spacing = safeCount <= 3 ? 62 : safeCount === 4 ? 54 : 46;
+  const safeCount = Math.max(1, Math.min(10, count));
+  const anchorRight = safeCount >= 7 ? 415 : 405;
+  const spacing = getTeamSpacing(safeCount);
   return Array.from({ length: safeCount }, (_, i) => anchorRight - (safeCount - 1 - i) * spacing);
 }
 
 function getCoralPositions(count: number): number[] {
-  const safeCount = Math.max(1, Math.min(6, count));
-  const anchorLeft = 555;
-  const spacing = safeCount <= 3 ? 62 : safeCount === 4 ? 54 : 46;
+  const safeCount = Math.max(1, Math.min(10, count));
+  const anchorLeft = safeCount >= 7 ? 545 : 555;
+  const spacing = getTeamSpacing(safeCount);
   return Array.from({ length: safeCount }, (_, i) => anchorLeft + i * spacing);
 }
 
@@ -233,9 +243,19 @@ export const TugArenaSvg: React.FC<TugArenaSvgProps> = ({
 
             {/* TEAM BLUE (Dynamic Player Count & Names) */}
             {bluePositions.map((xPos, i) => {
-              const playerName = truncateName(bluePlayers[i] || `P${i + 1}`, 9);
+              const isDense = bluePlayers.length >= 7;
+              const playerName = truncateName(bluePlayers[i] || `P${i + 1}`, isDense ? 8 : 9);
               const isActive = activeBlueIndex === i;
-              const nameY = bluePlayers.length >= 4 && i % 2 === 1 ? -104 : -88;
+              const nameY = isDense
+                ? i % 3 === 0
+                  ? -86
+                  : i % 3 === 1
+                  ? -104
+                  : -122
+                : bluePlayers.length >= 4 && i % 2 === 1
+                ? -104
+                : -88;
+              const labelW = isDense ? 56 : 64;
 
               return (
                 <g key={`blue-${i}`} transform={`translate(${xPos}, 195)`}>
@@ -244,9 +264,9 @@ export const TugArenaSvg: React.FC<TugArenaSvgProps> = ({
                   {/* Player Name Label */}
                   <g transform={`translate(-6, ${nameY})`}>
                     <rect
-                      x="-32"
+                      x={-labelW / 2}
                       y="-13"
-                      width="64"
+                      width={labelW}
                       height="16"
                       rx="4"
                       fill={isActive ? '#1D4ED8' : '#FFFFFF'}
@@ -258,7 +278,7 @@ export const TugArenaSvg: React.FC<TugArenaSvgProps> = ({
                       y="-2"
                       textAnchor="middle"
                       fill={isActive ? '#FFFFFF' : '#1E293B'}
-                      fontSize="9.5"
+                      fontSize={isDense ? '8.5' : '9.5'}
                       fontWeight="700"
                       fontFamily="Plus Jakarta Sans, sans-serif"
                     >
@@ -300,9 +320,19 @@ export const TugArenaSvg: React.FC<TugArenaSvgProps> = ({
 
             {/* TEAM CORAL (Dynamic Player Count & Names) */}
             {coralPositions.map((xPos, i) => {
-              const playerName = truncateName(coralPlayers[i] || `P${i + 1}`, 9);
+              const isDense = coralPlayers.length >= 7;
+              const playerName = truncateName(coralPlayers[i] || `P${i + 1}`, isDense ? 8 : 9);
               const isActive = activeCoralIndex === i;
-              const nameY = coralPlayers.length >= 4 && i % 2 === 1 ? -104 : -88;
+              const nameY = isDense
+                ? i % 3 === 0
+                  ? -86
+                  : i % 3 === 1
+                  ? -104
+                  : -122
+                : coralPlayers.length >= 4 && i % 2 === 1
+                ? -104
+                : -88;
+              const labelW = isDense ? 56 : 64;
 
               return (
                 <g key={`coral-${i}`} transform={`translate(${xPos}, 195)`}>
@@ -311,9 +341,9 @@ export const TugArenaSvg: React.FC<TugArenaSvgProps> = ({
                   {/* Player Name Label */}
                   <g transform={`translate(6, ${nameY})`}>
                     <rect
-                      x="-32"
+                      x={-labelW / 2}
                       y="-13"
-                      width="64"
+                      width={labelW}
                       height="16"
                       rx="4"
                       fill={isActive ? '#BE123C' : '#FFFFFF'}
@@ -325,7 +355,7 @@ export const TugArenaSvg: React.FC<TugArenaSvgProps> = ({
                       y="-2"
                       textAnchor="middle"
                       fill={isActive ? '#FFFFFF' : '#1E293B'}
-                      fontSize="9.5"
+                      fontSize={isDense ? '8.5' : '9.5'}
                       fontWeight="700"
                       fontFamily="Plus Jakarta Sans, sans-serif"
                     >
