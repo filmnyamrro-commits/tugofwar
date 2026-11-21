@@ -17,7 +17,7 @@ export type MathStrategy =
 
 export type GamePhase = 'TITLE_MENU' | 'PLAYING' | 'ROUND_SUMMARY';
 
-export type AppView = 'ARENA' | 'BANK' | 'REPORT' | 'FLUENCY' | 'GUIDE';
+export type AppView = 'WELCOME' | 'ARENA' | 'BANK' | 'REPORT' | 'FLUENCY' | 'GUIDE';
 
 export type QuestionGroupType = 'FOLDER' | 'TOPIC';
 

@@ -20,6 +20,7 @@ import {
   toggleQuestionActiveInCloud,
 } from './utils/cloudSync';
 import { TugPlayArena } from './components/TugPlayArena';
+import { WelcomeDashboard } from './components/WelcomeDashboard';
 import { QuestionBankView } from './components/QuestionBankView';
 import { AssessmentReportView } from './components/AssessmentReportView';
 import { FactFluencyMatrix } from './components/FactFluencyMatrix';
@@ -61,9 +62,10 @@ function migrateRawQuestions(rawList: unknown[]): CustomQuestion[] {
 }
 
 export default function App() {
-  const [activeView, setActiveView] = useState<AppView>('ARENA');
+  const [activeView, setActiveView] = useState<AppView>('WELCOME');
   const [arenaResetKey, setArenaResetKey] = useState<number>(0);
   const [requestedTier, setRequestedTier] = useState<CurriculumTier | undefined>(undefined);
+  const [requestedFolderKey, setRequestedFolderKey] = useState<string | null>(null);
 
   const [sessions, setSessions] = useState<MatchSession[]>(() => {
     try {
@@ -116,6 +118,10 @@ export default function App() {
     const sharedFromUrl = decodeSharedFolderFromLocation();
     if (sharedFromUrl.length > 0) {
       setRequestedTier('CUSTOM_ACTIVE');
+      setRequestedFolderKey(
+        `${sharedFromUrl[0].groupType}::${sharedFromUrl[0].groupName}`
+      );
+      setActiveView('ARENA');
       setArenaResetKey((k) => k + 1);
       const folderName = sharedFromUrl[0]?.groupName || 'Shared Folder';
       setCloudMessage(
@@ -272,18 +278,28 @@ export default function App() {
 
   const handlePracticeMissed = () => {
     setRequestedTier('MISSED_REVIEW');
+    setRequestedFolderKey(null);
     setArenaResetKey((k) => k + 1);
     setActiveView('ARENA');
   };
 
   const handlePlayActiveQuestions = () => {
     setRequestedTier('CUSTOM_ACTIVE');
+    setRequestedFolderKey(null);
+    setArenaResetKey((k) => k + 1);
+    setActiveView('ARENA');
+  };
+
+  const handlePlayFolderFromDashboard = (groupKey: string) => {
+    setRequestedTier('CUSTOM_ACTIVE');
+    setRequestedFolderKey(groupKey);
     setArenaResetKey((k) => k + 1);
     setActiveView('ARENA');
   };
 
   const handleNewMatch = () => {
     setRequestedTier(undefined);
+    setRequestedFolderKey(null);
     setArenaResetKey((k) => k + 1);
     setActiveView('ARENA');
   };
@@ -406,6 +422,7 @@ export default function App() {
   };
 
   const navItems: Array<{ id: AppView; label: string }> = [
+    { id: 'WELCOME', label: 'Dashboard' },
     { id: 'ARENA', label: 'Play Arena' },
     { id: 'BANK', label: 'Question Bank' },
     { id: 'REPORT', label: 'Assessment Report' },
@@ -420,7 +437,7 @@ export default function App() {
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-8 px-6 py-3.5">
           {/* Zone 1: Single text element wordmark */}
           <button
-            onClick={() => setActiveView('ARENA')}
+            onClick={() => setActiveView('WELCOME')}
             className="font-display text-xl font-extrabold tracking-tight text-slate-900 whitespace-nowrap shrink-0"
           >
             RopeSum
@@ -478,12 +495,24 @@ export default function App() {
 
       {/* Main Content */}
       <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8">
+        {activeView === 'WELCOME' && (
+          <WelcomeDashboard
+            customQuestions={customQuestions}
+            sessions={sessions}
+            user={user}
+            onNavigate={(view) => setActiveView(view)}
+            onPlayFolder={handlePlayFolderFromDashboard}
+            onQuickStartArena={handleNewMatch}
+          />
+        )}
+
         {activeView === 'ARENA' && (
           <TugPlayArena
             key={arenaResetKey}
             missedPairs={missedPairs}
             customQuestions={customQuestions}
             initialTier={requestedTier}
+            initialFolderKey={requestedFolderKey}
             user={user}
             cloudMessage={cloudMessage}
             onSignIn={handleSignIn}
@@ -491,6 +520,7 @@ export default function App() {
             onSessionComplete={handleSessionComplete}
             onViewReport={() => setActiveView('REPORT')}
             onOpenQuestionBank={() => setActiveView('BANK')}
+            onBackToWelcome={() => setActiveView('WELCOME')}
           />
         )}
 

@@ -22,6 +22,10 @@ import {
   BellRing,
   Upload,
   LogIn,
+  Pause,
+  SlidersHorizontal,
+  Square,
+  LayoutDashboard,
 } from 'lucide-react';
 import {
   AdditionQuestion,
@@ -52,6 +56,7 @@ interface TugPlayArenaProps {
   missedPairs: Array<{ a: number; b: number }>;
   customQuestions: CustomQuestion[];
   initialTier?: CurriculumTier;
+  initialFolderKey?: string | null;
   user?: User | null;
   cloudMessage?: string | null;
   onSignIn?: () => void;
@@ -59,6 +64,7 @@ interface TugPlayArenaProps {
   onSessionComplete: (session: MatchSession) => void;
   onViewReport: () => void;
   onOpenQuestionBank: () => void;
+  onBackToWelcome?: () => void;
 }
 
 const BOT_INTERVAL_MS: Record<BotDifficulty, number> = {
@@ -76,10 +82,28 @@ interface AiSoundConfig {
   enabled: boolean;
   voiceName: AiVoiceName;
   messageTemplate: string;
+  answerFeedbackEnabled: boolean;
+  correctPhrase: string;
+  wrongPhrase: string;
 }
 
 const DEFAULT_ALMOST_WIN_MESSAGE =
   'Watch out! {team} is just one pull away from winning!';
+const DEFAULT_CORRECT_PHRASE = 'Good job!';
+const DEFAULT_WRONG_PHRASE = 'Sorry, you are wrong.';
+
+const CORRECT_PHRASE_PRESETS = [
+  'Correct!',
+  'Good job!',
+  'Excellent!',
+  'Great work!',
+];
+
+const WRONG_PHRASE_PRESETS = [
+  'Sorry, you are wrong.',
+  'Oops, try again!',
+  'Not quite!',
+];
 
 const AI_VOICE_OPTIONS: Array<{ id: AiVoiceName; label: string; styleLabel: string }> = [
   { id: 'Kore', label: 'Kore', styleLabel: 'Energetic Announcer' },
@@ -130,6 +154,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   missedPairs,
   customQuestions,
   initialTier,
+  initialFolderKey,
   user,
   cloudMessage,
   onSignIn,
@@ -137,6 +162,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   onSessionComplete,
   onViewReport,
   onOpenQuestionBank,
+  onBackToWelcome,
 }) => {
   const activeCustomCount = customQuestions.filter((q) => q.isActive).length;
 
@@ -163,10 +189,13 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   // Configuration state
   const [mode, setMode] = useState<GameMode>('SOLO_BOT');
   const [tier, setTier] = useState<CurriculumTier>(initialTier ?? 'ALL_1_TO_20');
-  const [selectedCustomGroup, setSelectedCustomGroup] = useState<string | null>(null);
+  const [selectedCustomGroup, setSelectedCustomGroup] = useState<string | null>(
+    initialFolderKey ?? null
+  );
   const [botDifficulty, setBotDifficulty] = useState<BotDifficulty>('STEADY');
   const [maxSteps, setMaxSteps] = useState<number>(6);
   const [muted, setMuted] = useState<boolean>(false);
+  const [isPaused, setIsPaused] = useState<boolean>(false);
 
   // Keep selectedCustomGroup synchronized with available active folders
   useEffect(() => {
@@ -380,7 +409,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   const [completedSession, setCompletedSession] = useState<MatchSession | null>(null);
   const [showWinPopup, setShowWinPopup] = useState<boolean>(false);
 
-  // Customizable AI Almost-Win Sound Notification
+  // Customizable AI Almost-Win Sound Notification + Answer Feedback Voice
   const [aiSoundConfig, setAiSoundConfig] = useState<AiSoundConfig>(() => {
     try {
       const raw = localStorage.getItem(AI_SOUND_STORAGE_KEY);
@@ -396,6 +425,18 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
             typeof parsed.messageTemplate === 'string' && parsed.messageTemplate.trim()
               ? parsed.messageTemplate
               : DEFAULT_ALMOST_WIN_MESSAGE,
+          answerFeedbackEnabled:
+            typeof parsed.answerFeedbackEnabled === 'boolean'
+              ? parsed.answerFeedbackEnabled
+              : true,
+          correctPhrase:
+            typeof parsed.correctPhrase === 'string' && parsed.correctPhrase.trim()
+              ? parsed.correctPhrase
+              : DEFAULT_CORRECT_PHRASE,
+          wrongPhrase:
+            typeof parsed.wrongPhrase === 'string' && parsed.wrongPhrase.trim()
+              ? parsed.wrongPhrase
+              : DEFAULT_WRONG_PHRASE,
         };
       }
     } catch {
@@ -405,10 +446,14 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       enabled: true,
       voiceName: 'Kore',
       messageTemplate: DEFAULT_ALMOST_WIN_MESSAGE,
+      answerFeedbackEnabled: true,
+      correctPhrase: DEFAULT_CORRECT_PHRASE,
+      wrongPhrase: DEFAULT_WRONG_PHRASE,
     };
   });
 
   const [testingAiVoice, setTestingAiVoice] = useState<boolean>(false);
+  const [testingFeedbackKind, setTestingFeedbackKind] = useState<'CORRECT' | 'WRONG' | null>(null);
   const [aiVoiceError, setAiVoiceError] = useState<string | null>(null);
   const [almostWinAlertBanner, setAlmostWinAlertBanner] = useState<{
     team: 'BLUE' | 'CORAL';
@@ -481,6 +526,33 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
     []
   );
 
+  const playAnswerVoiceFeedback = useCallback(
+    (isCorrect: boolean) => {
+      if (!aiSoundConfig.answerFeedbackEnabled || muted) return;
+      const phrase = (
+        isCorrect ? aiSoundConfig.correctPhrase : aiSoundConfig.wrongPhrase
+      ).trim();
+      if (!phrase) return;
+
+      const cacheKey = `${aiSoundConfig.voiceName}::${phrase}`;
+      const cached = ttsCacheRef.current.get(cacheKey);
+      if (cached) {
+        void soundFx.playBase64Wav(cached.audioBase64, cached.mimeType);
+      } else {
+        soundFx.speakPhrase(phrase);
+        void fetchAiVoiceAudio(phrase, aiSoundConfig.voiceName, false);
+      }
+    },
+    [
+      aiSoundConfig.answerFeedbackEnabled,
+      aiSoundConfig.correctPhrase,
+      aiSoundConfig.voiceName,
+      aiSoundConfig.wrongPhrase,
+      fetchAiVoiceAudio,
+      muted,
+    ]
+  );
+
   const handleTestAiVoice = async () => {
     setAiVoiceError(null);
     soundFx.unlock();
@@ -497,6 +569,30 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       }
     } finally {
       setTestingAiVoice(false);
+    }
+  };
+
+  const handleTestAnswerFeedback = async (kind: 'CORRECT' | 'WRONG') => {
+    setAiVoiceError(null);
+    soundFx.unlock();
+    const phrase = (
+      kind === 'CORRECT' ? aiSoundConfig.correctPhrase : aiSoundConfig.wrongPhrase
+    ).trim();
+    if (!phrase) return;
+    setTestingFeedbackKind(kind);
+    try {
+      if (muted) {
+        setMuted(false);
+        soundFx.setMuted(false);
+      }
+      const clip = await fetchAiVoiceAudio(phrase, aiSoundConfig.voiceName, true);
+      if (clip) {
+        await soundFx.playBase64Wav(clip.audioBase64, clip.mimeType);
+      } else {
+        soundFx.speakPhrase(phrase);
+      }
+    } finally {
+      setTestingFeedbackKind(null);
     }
   };
 
@@ -563,7 +659,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
 
   const finishMatch = useCallback(
     (
-      winner: 'BLUE' | 'CORAL',
+      winner: 'BLUE' | 'CORAL' | 'DRAW',
       finalAttempts: AttemptRecord[],
       finalBluePulls: number,
       finalCoralPulls: number,
@@ -593,6 +689,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
         maxStreak: finalMaxStreak,
         attempts: finalAttempts,
       };
+      setIsPaused(false);
       setCompletedSession(session);
       setShowWinPopup(true);
       setPhase('ROUND_SUMMARY');
@@ -610,6 +707,12 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       tier,
     ]
   );
+
+  const handleEndGameNow = useCallback(() => {
+    const winner: 'BLUE' | 'CORAL' | 'DRAW' =
+      ropePosition < 0 ? 'BLUE' : ropePosition > 0 ? 'CORAL' : 'DRAW';
+    finishMatch(winner, attempts, bluePulls, coralPulls, maxStreak);
+  }, [attempts, bluePulls, coralPulls, finishMatch, maxStreak, ropePosition]);
 
   const startNewMatch = useCallback(
     (overrideTier?: CurriculumTier) => {
@@ -653,6 +756,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       setCoralLockedUntil(0);
       setCompletedSession(null);
       setShowWinPopup(false);
+      setIsPaused(false);
       setAlmostWinAlertBanner(null);
       lastAlmostWinSideRef.current = null;
       soundFx.unlock();
@@ -671,6 +775,23 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
         void fetchAiVoiceAudio(coralClipText, aiSoundConfig.voiceName, false);
       }
 
+      if (aiSoundConfig.answerFeedbackEnabled && !muted) {
+        if (aiSoundConfig.correctPhrase.trim()) {
+          void fetchAiVoiceAudio(
+            aiSoundConfig.correctPhrase.trim(),
+            aiSoundConfig.voiceName,
+            false
+          );
+        }
+        if (aiSoundConfig.wrongPhrase.trim()) {
+          void fetchAiVoiceAudio(
+            aiSoundConfig.wrongPhrase.trim(),
+            aiSoundConfig.voiceName,
+            false
+          );
+        }
+      }
+
       const now = Date.now();
       matchStartRef.current = now;
       blueStartRef.current = now;
@@ -678,9 +799,12 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       setPhase('PLAYING');
     },
     [
+      aiSoundConfig.answerFeedbackEnabled,
+      aiSoundConfig.correctPhrase,
       aiSoundConfig.enabled,
       aiSoundConfig.messageTemplate,
       aiSoundConfig.voiceName,
+      aiSoundConfig.wrongPhrase,
       customQuestions,
       fetchAiVoiceAudio,
       missedPairs,
@@ -695,7 +819,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   // Handle Solo answer selection
   const handleSoloAnswer = useCallback(
     (choiceIdx: number) => {
-      if (phase !== 'PLAYING' || soloFeedback !== null) return;
+      if (phase !== 'PLAYING' || isPaused || soloFeedback !== null) return;
       const choice: QuestionChoice | undefined = blueQuestion.choices[choiceIdx];
       if (!choice) return;
 
@@ -756,6 +880,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
             : `${currentPlayerName} Pulls! (${resolvedBlueLabel})`
         );
         soundFx.playPullCorrect(nextStreak);
+        playAnswerVoiceFeedback(true);
 
         if (nextRope <= -maxSteps) {
           setTimeout(() => {
@@ -797,6 +922,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
           setShowHint(true);
         }
         soundFx.playMiss();
+        playAnswerVoiceFeedback(false);
 
         if (nextRope >= maxSteps) {
           setTimeout(() => {
@@ -832,10 +958,12 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       coralPulls,
       customQuestions,
       finishMatch,
+      isPaused,
       maxSteps,
       maxStreak,
       missedPairs,
       phase,
+      playAnswerVoiceFeedback,
       resolvedBlueLabel,
       resolvedBluePlayers,
       ropePosition,
@@ -849,7 +977,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   // Handle 2-Player Duel answer
   const handleDuelAnswer = useCallback(
     (player: 'BLUE' | 'CORAL', choiceIdx: number) => {
-      if (phase !== 'PLAYING') return;
+      if (phase !== 'PLAYING' || isPaused) return;
       const now = Date.now();
 
       if (player === 'BLUE' && now < blueLockedUntil) return;
@@ -906,6 +1034,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
           setLastPuller('BLUE');
           setLastEventText(`${activePlayerName} Pulls! (${resolvedBlueLabel})`);
           soundFx.playPullCorrect(nextStreak);
+          playAnswerVoiceFeedback(true);
 
           if (nextRope <= -maxSteps) {
             finishMatch('BLUE', nextAttempts, nextBluePulls, coralPulls, nextMax);
@@ -934,6 +1063,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
           setLastPuller('CORAL');
           setLastEventText(`${activePlayerName} Pulls! (${resolvedCoralLabel})`);
           soundFx.playPullCorrect(nextStreak);
+          playAnswerVoiceFeedback(true);
 
           if (nextRope >= maxSteps) {
             finishMatch('CORAL', nextAttempts, bluePulls, nextCoralPulls, maxStreak);
@@ -954,6 +1084,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
         }
       } else {
         soundFx.playMiss();
+        playAnswerVoiceFeedback(false);
         if (player === 'BLUE') {
           setBlueStreak(0);
           setBlueLockedUntil(now + 950);
@@ -979,10 +1110,12 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       coralTurnIndex,
       customQuestions,
       finishMatch,
+      isPaused,
       maxSteps,
       maxStreak,
       missedPairs,
       phase,
+      playAnswerVoiceFeedback,
       resolvedBlueLabel,
       resolvedBluePlayers,
       resolvedCoralLabel,
@@ -995,7 +1128,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
 
   // Bot timer loop in Solo mode
   useEffect(() => {
-    if (phase !== 'PLAYING' || mode !== 'SOLO_BOT') return;
+    if (phase !== 'PLAYING' || mode !== 'SOLO_BOT' || isPaused) return;
     if (soloFeedback !== null) return;
 
     const totalMs = BOT_INTERVAL_MS[botDifficulty];
@@ -1009,7 +1142,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
     }, tickMs);
 
     return () => window.clearInterval(timer);
-  }, [botDifficulty, mode, phase, soloFeedback]);
+  }, [botDifficulty, isPaused, mode, phase, soloFeedback]);
 
   // Trigger Bot Pull when botProgress hits 100
   useEffect(() => {
@@ -1743,6 +1876,152 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                   <p className="text-xs font-medium text-rose-700">{aiVoiceError}</p>
                 )}
               </div>
+
+              {/* Correct / Wrong Answer Voice Feedback */}
+              <div className="mt-5 border-t border-slate-100 pt-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-semibold text-slate-800">
+                      Answer Voice Feedback (Correct / Wrong)
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-slate-500">
+                      Speaks encouragement when a player answers right or wrong during play.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setAiSoundConfig((prev) => ({
+                        ...prev,
+                        answerFeedbackEnabled: !prev.answerFeedbackEnabled,
+                      }))
+                    }
+                    className={`rounded-md border px-2.5 py-1 text-xs font-semibold transition-colors ${
+                      aiSoundConfig.answerFeedbackEnabled
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                        : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {aiSoundConfig.answerFeedbackEnabled ? 'Answer Voice On' : 'Answer Voice Off'}
+                  </button>
+                </div>
+
+                <div
+                  className={`mt-3 grid gap-4 sm:grid-cols-2 ${
+                    aiSoundConfig.answerFeedbackEnabled ? '' : 'opacity-60'
+                  }`}
+                >
+                  {/* Correct Answer Sound */}
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold text-emerald-900">
+                        When Player Answers Correctly
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void handleTestAnswerFeedback('CORRECT')}
+                        disabled={testingFeedbackKind === 'CORRECT'}
+                        className="inline-flex items-center gap-1 rounded border border-emerald-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-50"
+                      >
+                        {testingFeedbackKind === 'CORRECT' ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Volume2 className="h-3 w-3" />
+                        )}
+                        Test
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1">
+                      {CORRECT_PHRASE_PRESETS.map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() =>
+                            setAiSoundConfig((prev) => ({ ...prev, correctPhrase: preset }))
+                          }
+                          className={`rounded border px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                            aiSoundConfig.correctPhrase === preset
+                              ? 'border-emerald-600 bg-emerald-600 text-white'
+                              : 'border-emerald-200 bg-white text-emerald-800 hover:bg-emerald-50'
+                          }`}
+                        >
+                          {preset}
+                        </button>
+                      ))}
+                    </div>
+
+                    <input
+                      type="text"
+                      maxLength={80}
+                      value={aiSoundConfig.correctPhrase}
+                      onChange={(e) =>
+                        setAiSoundConfig((prev) => ({
+                          ...prev,
+                          correctPhrase: e.target.value,
+                        }))
+                      }
+                      placeholder={DEFAULT_CORRECT_PHRASE}
+                      className="w-full rounded border border-emerald-200 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-emerald-600 focus:outline-none"
+                    />
+                  </div>
+
+                  {/* Wrong Answer Sound */}
+                  <div className="rounded-lg border border-rose-200 bg-rose-50/40 p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold text-rose-900">
+                        When Player Answers Wrongly
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void handleTestAnswerFeedback('WRONG')}
+                        disabled={testingFeedbackKind === 'WRONG'}
+                        className="inline-flex items-center gap-1 rounded border border-rose-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-rose-800 hover:bg-rose-50"
+                      >
+                        {testingFeedbackKind === 'WRONG' ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Volume2 className="h-3 w-3" />
+                        )}
+                        Test
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1">
+                      {WRONG_PHRASE_PRESETS.map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() =>
+                            setAiSoundConfig((prev) => ({ ...prev, wrongPhrase: preset }))
+                          }
+                          className={`rounded border px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                            aiSoundConfig.wrongPhrase === preset
+                              ? 'border-rose-600 bg-rose-600 text-white'
+                              : 'border-rose-200 bg-white text-rose-800 hover:bg-rose-50'
+                          }`}
+                        >
+                          {preset}
+                        </button>
+                      ))}
+                    </div>
+
+                    <input
+                      type="text"
+                      maxLength={80}
+                      value={aiSoundConfig.wrongPhrase}
+                      onChange={(e) =>
+                        setAiSoundConfig((prev) => ({
+                          ...prev,
+                          wrongPhrase: e.target.value,
+                        }))
+                      }
+                      placeholder={DEFAULT_WRONG_PHRASE}
+                      className="w-full rounded border border-rose-200 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-rose-600 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1832,10 +2111,23 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
     const blueAttempts = completedSession.attempts.filter((a) => a.player === 'BLUE');
     const summary = summarizeAttempts(blueAttempts);
     const missedInMatch = blueAttempts.filter((a) => !a.isCorrect);
+    const isDraw = completedSession.winner === 'DRAW';
     const isBlueWin = completedSession.winner === 'BLUE';
-    const winningTeamLabel = isBlueWin ? resolvedBlueLabel : resolvedCoralLabel;
-    const winningPlayers = isBlueWin ? resolvedBluePlayers : resolvedCoralPlayers;
-    const winningPhotos = isBlueWin ? teamsState.bluePhotos : teamsState.coralPhotos;
+    const winningTeamLabel = isDraw
+      ? 'Both Teams'
+      : isBlueWin
+      ? resolvedBlueLabel
+      : resolvedCoralLabel;
+    const winningPlayers = isDraw
+      ? [...resolvedBluePlayers, ...resolvedCoralPlayers]
+      : isBlueWin
+      ? resolvedBluePlayers
+      : resolvedCoralPlayers;
+    const winningPhotos = isDraw
+      ? [...teamsState.bluePhotos, ...teamsState.coralPhotos]
+      : isBlueWin
+      ? teamsState.bluePhotos
+      : teamsState.coralPhotos;
 
     return (
       <div className="mx-auto max-w-5xl space-y-6">
@@ -1855,7 +2147,9 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
               {/* Colored Top Celebration Header */}
               <div
                 className={`relative px-6 pt-7 pb-6 text-center text-white ${
-                  isBlueWin
+                  isDraw
+                    ? 'bg-gradient-to-br from-slate-700 to-slate-900'
+                    : isBlueWin
                     ? 'bg-gradient-to-br from-blue-600 to-indigo-700'
                     : 'bg-gradient-to-br from-rose-600 to-pink-700'
                 }`}
@@ -1876,18 +2170,23 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                   {completedSession.customGroupLabel ?? TIER_LABELS[completedSession.tier]}
                 </div>
                 <h2 id="winner-congrats-title" className="mt-1 text-2xl font-extrabold sm:text-3xl">
-                  Congratulations, {winningTeamLabel}!
+                  {isDraw
+                    ? "It's a Tie Match!"
+                    : `Congratulations, ${winningTeamLabel}!`}
                 </h2>
                 <p className="mt-1 text-sm text-white/90 tabular-nums">
-                  {winningTeamLabel} wins the Tug-of-War ({completedSession.bluePulls} –{' '}
-                  {completedSession.coralPulls})
+                  {isDraw
+                    ? `Final Pull Score: ${completedSession.bluePulls} – ${completedSession.coralPulls}`
+                    : `${winningTeamLabel} wins the Tug-of-War (${completedSession.bluePulls} – ${completedSession.coralPulls})`}
                 </p>
               </div>
 
               {/* Winning Players & Photos Showcase */}
               <div className="px-6 py-6">
                 <div className="text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Winning {winningPlayers.length === 1 ? 'Player' : 'Team Roster'}
+                  {isDraw
+                    ? 'Participating Players'
+                    : `Winning ${winningPlayers.length === 1 ? 'Player' : 'Team Roster'}`}
                 </div>
 
                 <div className="mt-4 flex flex-wrap items-start justify-center gap-4">
@@ -1903,13 +2202,19 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                             src={photo}
                             alt={playerName}
                             className={`h-20 w-20 rounded-full object-cover shadow-md ring-4 ${
-                              isBlueWin ? 'ring-blue-100' : 'ring-rose-100'
+                              isDraw
+                                ? 'ring-slate-200'
+                                : isBlueWin
+                                ? 'ring-blue-100'
+                                : 'ring-rose-100'
                             }`}
                           />
                         ) : (
                           <div
                             className={`flex h-20 w-20 items-center justify-center rounded-full text-xl font-bold shadow-sm ring-4 ${
-                              isBlueWin
+                              isDraw
+                                ? 'bg-slate-100 text-slate-700 ring-slate-200'
+                                : isBlueWin
                                 ? 'bg-blue-50 text-blue-700 ring-blue-100'
                                 : 'bg-rose-50 text-rose-700 ring-rose-100'
                             }`}
@@ -1952,7 +2257,11 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
           maxSteps={maxSteps}
           lastPuller={completedSession.winner === 'DRAW' ? null : completedSession.winner}
           lastEventText={
-            isBlueWin ? `${resolvedBlueLabel} Wins!` : `${resolvedCoralLabel} Wins!`
+            isDraw
+              ? 'Match Ended in a Tie!'
+              : isBlueWin
+              ? `${resolvedBlueLabel} Wins!`
+              : `${resolvedCoralLabel} Wins!`
           }
           blueLabel={resolvedBlueLabel}
           coralLabel={resolvedCoralLabel}
@@ -1968,7 +2277,9 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                 {mode === 'SOLO_BOT' ? 'Group / Solo Assessment' : '2-Team Duel'}
               </div>
               <h2 className="mt-1 text-2xl font-bold text-slate-900">
-                {isBlueWin
+                {isDraw
+                  ? 'Match Ended in a Draw — Review & Rematch!'
+                  : isBlueWin
                   ? `${resolvedBlueLabel} Wins the Tug-of-War!`
                   : `${resolvedCoralLabel} Took This Round — Review & Rematch!`}
               </h2>
@@ -2221,8 +2532,8 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
-      {/* Compact Match Control Strip */}
-      <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white px-4 py-2.5">
+      {/* Live Match Control Strip */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-2.5">
         <div className="flex flex-wrap items-center gap-3 text-xs font-medium text-slate-600">
           <span className="font-semibold text-slate-900">{activeSourceLabel}</span>
           <span aria-hidden="true">·</span>
@@ -2235,23 +2546,113 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
           </span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
+            type="button"
             onClick={toggleMute}
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 whitespace-nowrap"
           >
             {muted ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
             {muted ? 'Unmute' : 'Mute'}
           </button>
+
           <button
-            onClick={() => setPhase('TITLE_MENU')}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:border-rose-200 hover:text-rose-700 whitespace-nowrap"
+            type="button"
+            onClick={() => setIsPaused((p) => !p)}
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+              isPaused
+                ? 'border-blue-600 bg-blue-50 text-blue-800'
+                : 'border-slate-200 text-slate-700 hover:bg-slate-50'
+            }`}
           >
-            <Flag className="h-3.5 w-3.5" />
-            End Match
+            {isPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+            {isPaused ? 'Resume' : 'Pause'}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => startNewMatch()}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 whitespace-nowrap"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Restart
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setIsPaused(false);
+              soundFx.stopAiVoice();
+              setPhase('TITLE_MENU');
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 whitespace-nowrap"
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            Back to Settings
+          </button>
+
+          {onBackToWelcome && (
+            <button
+              type="button"
+              onClick={() => {
+                setIsPaused(false);
+                soundFx.stopAiVoice();
+                onBackToWelcome();
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 whitespace-nowrap"
+            >
+              <LayoutDashboard className="h-3.5 w-3.5" />
+              Welcome Board
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={handleEndGameNow}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 transition-colors hover:bg-rose-100 whitespace-nowrap"
+          >
+            <Square className="h-3 w-3 fill-current" />
+            End Game
           </button>
         </div>
       </div>
+
+      {/* Pause Overlay Banner */}
+      {isPaused && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+          <div className="font-semibold">
+            Match Paused — Timers and answer buttons are locked until you resume.
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsPaused(false)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 font-semibold text-white hover:bg-blue-700"
+            >
+              <Play className="h-3.5 w-3.5" />
+              Resume Game
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setIsPaused(false);
+                soundFx.stopAiVoice();
+                setPhase('TITLE_MENU');
+              }}
+              className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 font-semibold text-amber-900 hover:bg-amber-100"
+            >
+              Back to Settings
+            </button>
+            <button
+              type="button"
+              onClick={handleEndGameNow}
+              className="rounded-lg border border-rose-200 bg-rose-600 px-3 py-1.5 font-semibold text-white hover:bg-rose-700"
+            >
+              End &amp; Save Game
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Almost-Win AI Alert Banner */}
       {almostWinAlertBanner && (

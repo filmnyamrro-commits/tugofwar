@@ -72,6 +72,28 @@ class SoundEffects {
       this.activeVoiceAudio.currentTime = 0;
       this.activeVoiceAudio = null;
     }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // Ignore
+      }
+    }
+  }
+
+  public speakPhrase(text: string) {
+    if (this.muted || typeof window === 'undefined' || !text.trim()) return;
+    if (!('speechSynthesis' in window)) return;
+    try {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 1.05;
+      utterance.pitch = 1.05;
+      utterance.volume = 0.95;
+      window.speechSynthesis.speak(utterance);
+    } catch {
+      // Ignore speech synthesis restrictions
+    }
   }
 
   public async playBase64Wav(base64Audio: string, mimeType = 'audio/wav'): Promise<void> {
