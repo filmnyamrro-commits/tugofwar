@@ -27,6 +27,8 @@ import {
   Square,
   LayoutDashboard,
   Image as ImageIcon,
+  Music,
+  Trash2,
 } from 'lucide-react';
 import {
   AdditionQuestion,
@@ -77,8 +79,16 @@ const BOT_INTERVAL_MS: Record<BotDifficulty, number> = {
 const TEAMS_STORAGE_KEY = 'ropesum_teams_v1';
 const AI_SOUND_STORAGE_KEY = 'ropesum_ai_sound_v1';
 const ARENA_BG_STORAGE_KEY = 'ropesum_arena_bg_v1';
+const CONGRATS_AUDIO_STORAGE_KEY = 'ropesum_congrats_audio_v1';
+const MAX_CONGRATS_AUDIO_BYTES = 4 * 1024 * 1024;
 
 type AiVoiceName = 'Kore' | 'Puck' | 'Fenrir' | 'Charon' | 'Zephyr';
+type CongratsAudioMode = 'AI_VOICE' | 'UPLOADED_AUDIO' | 'CHIME_ONLY';
+
+interface SavedCongratsAudio {
+  name: string;
+  dataUrl: string;
+}
 
 interface AiSoundConfig {
   enabled: boolean;
@@ -87,12 +97,15 @@ interface AiSoundConfig {
   answerFeedbackEnabled: boolean;
   correctPhrase: string;
   wrongPhrase: string;
+  congratsMode: CongratsAudioMode;
+  congratsTemplate: string;
 }
 
 const DEFAULT_ALMOST_WIN_MESSAGE =
   'Watch out! {team} is just one pull away from winning!';
 const DEFAULT_CORRECT_PHRASE = 'Good job, {player}!';
 const DEFAULT_WRONG_PHRASE = 'Oops, try again, {player}.';
+const DEFAULT_CONGRATS_PHRASE = 'Congratulations, {team}! Amazing victory, {players}!';
 
 const CORRECT_PHRASE_PRESETS = [
   'Good job, {player}!',
@@ -105,6 +118,13 @@ const WRONG_PHRASE_PRESETS = [
   'Oops, try again, {player}.',
   'Sorry, you are wrong, {player}.',
   'Not quite, {player}.',
+];
+
+const CONGRATS_PHRASE_PRESETS = [
+  'Congratulations, {team}! Amazing victory, {players}!',
+  'Way to go, {team}! Champions of Tug of War, {players}!',
+  'Bravo, {players}! {team} wins {score}!',
+  'Victory for {team}! Great teamwork, {players}!',
 ];
 
 const AI_VOICE_OPTIONS: Array<{ id: AiVoiceName; label: string; styleLabel: string }> = [
@@ -135,6 +155,30 @@ function resolveAnswerFeedbackText(
   return hasTrailingPunct
     ? `${base} ${cleanName}!`
     : `${base}, ${cleanName}${isCorrect ? '!' : '.'}`;
+}
+
+function formatPlayerNamesList(players: string[]): string {
+  const cleaned = players.map((p) => p.trim()).filter(Boolean);
+  if (cleaned.length === 0) return 'Champions';
+  if (cleaned.length === 1) return cleaned[0];
+  if (cleaned.length === 2) return `${cleaned[0]} and ${cleaned[1]}`;
+  return `${cleaned.slice(0, -1).join(', ')}, and ${cleaned[cleaned.length - 1]}`;
+}
+
+function resolveCongratsText(
+  template: string,
+  teamName: string,
+  players: string[],
+  blueScore: number,
+  coralScore: number
+): string {
+  const base = template.trim() || DEFAULT_CONGRATS_PHRASE;
+  const playersText = formatPlayerNamesList(players);
+  const scoreText = `${blueScore} to ${coralScore}`;
+  return base
+    .replace(/\{team\}/gi, teamName.trim() || 'Winning Team')
+    .replace(/\{players\}/gi, playersText)
+    .replace(/\{score\}/gi, scoreText);
 }
 
 interface SavedTeamsState {
@@ -475,7 +519,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   const [completedSession, setCompletedSession] = useState<MatchSession | null>(null);
   const [showWinPopup, setShowWinPopup] = useState<boolean>(false);
 
-  // Customizable AI Almost-Win Sound Notification + Answer Feedback Voice
+  // Customizable AI Almost-Win Sound Notification + Answer Feedback + Congratulation Audio
   const [aiSoundConfig, setAiSoundConfig] = useState<AiSoundConfig>(() => {
     try {
       const raw = localStorage.getItem(AI_SOUND_STORAGE_KEY);
@@ -484,6 +528,12 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
         const validVoice = AI_VOICE_OPTIONS.some((v) => v.id === parsed.voiceName)
           ? (parsed.voiceName as AiVoiceName)
           : 'Kore';
+        const validCongratsMode: CongratsAudioMode =
+          parsed.congratsMode === 'UPLOADED_AUDIO' ||
+          parsed.congratsMode === 'CHIME_ONLY' ||
+          parsed.congratsMode === 'AI_VOICE'
+            ? parsed.congratsMode
+            : 'AI_VOICE';
         return {
           enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : true,
           voiceName: validVoice,
@@ -503,6 +553,11 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
             typeof parsed.wrongPhrase === 'string' && parsed.wrongPhrase.trim()
               ? parsed.wrongPhrase
               : DEFAULT_WRONG_PHRASE,
+          congratsMode: validCongratsMode,
+          congratsTemplate:
+            typeof parsed.congratsTemplate === 'string' && parsed.congratsTemplate.trim()
+              ? parsed.congratsTemplate
+              : DEFAULT_CONGRATS_PHRASE,
         };
       }
     } catch {
@@ -515,12 +570,34 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       answerFeedbackEnabled: true,
       correctPhrase: DEFAULT_CORRECT_PHRASE,
       wrongPhrase: DEFAULT_WRONG_PHRASE,
+      congratsMode: 'AI_VOICE',
+      congratsTemplate: DEFAULT_CONGRATS_PHRASE,
     };
+  });
+
+  const [congratsAudio, setCongratsAudio] = useState<SavedCongratsAudio | null>(() => {
+    try {
+      const raw = localStorage.getItem(CONGRATS_AUDIO_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<SavedCongratsAudio>;
+        if (typeof parsed.dataUrl === 'string' && parsed.dataUrl.startsWith('data:audio/')) {
+          return {
+            name: typeof parsed.name === 'string' && parsed.name ? parsed.name : 'Custom Audio',
+            dataUrl: parsed.dataUrl,
+          };
+        }
+      }
+    } catch {
+      // Ignore
+    }
+    return null;
   });
 
   const [testingAiVoice, setTestingAiVoice] = useState<boolean>(false);
   const [testingFeedbackKind, setTestingFeedbackKind] = useState<'CORRECT' | 'WRONG' | null>(null);
+  const [testingCongratsAudio, setTestingCongratsAudio] = useState<boolean>(false);
   const [aiVoiceError, setAiVoiceError] = useState<string | null>(null);
+  const [congratsAudioError, setCongratsAudioError] = useState<string | null>(null);
   const [almostWinAlertBanner, setAlmostWinAlertBanner] = useState<{
     team: 'BLUE' | 'CORAL';
     text: string;
@@ -539,6 +616,20 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       // Ignore
     }
   }, [aiSoundConfig]);
+
+  useEffect(() => {
+    try {
+      if (congratsAudio) {
+        localStorage.setItem(CONGRATS_AUDIO_STORAGE_KEY, JSON.stringify(congratsAudio));
+      } else {
+        localStorage.removeItem(CONGRATS_AUDIO_STORAGE_KEY);
+      }
+    } catch {
+      setCongratsAudioError(
+        'Audio loaded for this session, but it exceeded browser storage quota for auto-saving.'
+      );
+    }
+  }, [congratsAudio]);
 
   const fetchAiVoiceAudio = useCallback(
     async (
@@ -708,6 +799,156 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
     }
   };
 
+  const playVictoryCelebration = useCallback(
+    async (options: {
+      teamLabel: string;
+      players: string[];
+      blueScore: number;
+      coralScore: number;
+      isBlueWin: boolean;
+      isDraw?: boolean;
+      forceUnmute?: boolean;
+      surfaceErrors?: boolean;
+    }) => {
+      const {
+        teamLabel,
+        players,
+        blueScore,
+        coralScore,
+        isBlueWin,
+        isDraw = false,
+        forceUnmute = false,
+        surfaceErrors = false,
+      } = options;
+
+      if (surfaceErrors) {
+        setCongratsAudioError(null);
+      }
+
+      if (forceUnmute) {
+        soundFx.unlock();
+        if (muted) {
+          setMuted(false);
+          soundFx.setMuted(false);
+        }
+      } else if (muted) {
+        return;
+      }
+
+      const modeSelected = aiSoundConfig.congratsMode;
+
+      if (modeSelected === 'UPLOADED_AUDIO') {
+        if (congratsAudio?.dataUrl) {
+          await soundFx.playDataUrlAudio(congratsAudio.dataUrl);
+        } else {
+          if (surfaceErrors) {
+            setCongratsAudioError('Please upload an audio file first, or switch to AI Voice.');
+          }
+          soundFx.playVictory(isBlueWin || isDraw);
+        }
+        return;
+      }
+
+      if (modeSelected === 'CHIME_ONLY') {
+        soundFx.stopAiVoice();
+        soundFx.playVictory(isBlueWin || isDraw);
+        return;
+      }
+
+      // AI_VOICE mode: play brief victory chime then speak customized AI congratulation
+      soundFx.playVictory(isBlueWin || isDraw);
+      const spokenText = resolveCongratsText(
+        aiSoundConfig.congratsTemplate,
+        teamLabel,
+        players,
+        blueScore,
+        coralScore
+      );
+
+      if (surfaceErrors) {
+        setTestingCongratsAudio(true);
+      }
+      try {
+        const clip = await fetchAiVoiceAudio(spokenText, aiSoundConfig.voiceName, false);
+        if (clip) {
+          await soundFx.playBase64Wav(clip.audioBase64, clip.mimeType);
+        } else {
+          if (surfaceErrors) {
+            setCongratsAudioError('AI voice server unavailable — played browser voice fallback.');
+          }
+          soundFx.speakPhrase(spokenText);
+        }
+      } finally {
+        if (surfaceErrors) {
+          setTestingCongratsAudio(false);
+        }
+      }
+    },
+    [
+      aiSoundConfig.congratsMode,
+      aiSoundConfig.congratsTemplate,
+      aiSoundConfig.voiceName,
+      congratsAudio,
+      fetchAiVoiceAudio,
+      muted,
+    ]
+  );
+
+  const handleCongratsAudioUpload = (file?: File, autoPreview = true) => {
+    if (!file) return;
+    setCongratsAudioError(null);
+    const isAudio =
+      file.type.startsWith('audio/') ||
+      /\.(mp3|wav|ogg|m4a|aac|webm|flac)$/i.test(file.name);
+    if (!isAudio) {
+      setCongratsAudioError('Please upload an audio file (.mp3, .wav, .m4a, .ogg, or .webm).');
+      return;
+    }
+    if (file.size > MAX_CONGRATS_AUDIO_BYTES) {
+      setCongratsAudioError('Audio file is too large (max 4 MB). Please pick a shorter clip.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      if (!result) {
+        setCongratsAudioError('Could not read that audio file. Please try another file.');
+        return;
+      }
+      const nextAudio: SavedCongratsAudio = { name: file.name, dataUrl: result };
+      setCongratsAudio(nextAudio);
+      setAiSoundConfig((prev) => ({ ...prev, congratsMode: 'UPLOADED_AUDIO' }));
+      if (autoPreview) {
+        soundFx.unlock();
+        if (muted) {
+          setMuted(false);
+          soundFx.setMuted(false);
+        }
+        void soundFx.playDataUrlAudio(result);
+      }
+    };
+    reader.onerror = () => {
+      setCongratsAudioError('Failed to load the selected audio file.');
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleClearCongratsAudio = () => {
+    soundFx.stopAiVoice();
+    setCongratsAudioError(null);
+    setCongratsAudio(null);
+    setAiSoundConfig((prev) => ({
+      ...prev,
+      congratsMode: prev.congratsMode === 'UPLOADED_AUDIO' ? 'AI_VOICE' : prev.congratsMode,
+    }));
+  };
+
+  const closeWinPopup = useCallback(() => {
+    soundFx.stopAiVoice();
+    setShowWinPopup(false);
+  }, []);
+
   // Trigger AI notification when a team is 1 pull away from winning
   useEffect(() => {
     if (phase !== 'PLAYING') {
@@ -805,16 +1046,42 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       setCompletedSession(session);
       setShowWinPopup(true);
       setPhase('ROUND_SUMMARY');
-      soundFx.playVictory(winner === 'BLUE');
       onSessionComplete(session);
+
+      const isDrawMatch = winner === 'DRAW';
+      const isBlueVictory = winner === 'BLUE';
+      const winTeam = isDrawMatch
+        ? 'Both Teams'
+        : isBlueVictory
+        ? resolvedBlueLabel
+        : resolvedCoralLabel;
+      const winPlayers = isDrawMatch
+        ? [...resolvedBluePlayers, ...resolvedCoralPlayers]
+        : isBlueVictory
+        ? resolvedBluePlayers
+        : resolvedCoralPlayers;
+
+      void playVictoryCelebration({
+        teamLabel: winTeam,
+        players: winPlayers,
+        blueScore: finalBluePulls,
+        coralScore: finalCoralPulls,
+        isBlueWin: isBlueVictory,
+        isDraw: isDrawMatch,
+        forceUnmute: false,
+        surfaceErrors: false,
+      });
     },
     [
       activeSourceLabel,
       botDifficulty,
       mode,
       onSessionComplete,
+      playVictoryCelebration,
       resolvedBlueLabel,
+      resolvedBluePlayers,
       resolvedCoralLabel,
+      resolvedCoralPlayers,
       selectedGroupInfo,
       tier,
     ]
@@ -2218,6 +2485,182 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                   </div>
                 </div>
               </div>
+
+              {/* Congratulation Pop-Up Sound (Match Victory) */}
+              <div className="mt-5 border-t border-slate-100 pt-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800">
+                      <Trophy className="h-3.5 w-3.5 text-amber-500" />
+                      Congratulation Pop-Up Audio (Match Winner)
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-slate-500">
+                      Choose a customizable AI congratulation voice or upload your own celebration audio file.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-2.5 grid grid-cols-3 gap-1.5">
+                  {(
+                    [
+                      { id: 'AI_VOICE', label: 'AI Voice Congrats' },
+                      { id: 'UPLOADED_AUDIO', label: 'Upload Audio File' },
+                      { id: 'CHIME_ONLY', label: 'Fanfare Chime Only' },
+                    ] as const
+                  ).map((opt) => {
+                    const active = aiSoundConfig.congratsMode === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => {
+                          setCongratsAudioError(null);
+                          setAiSoundConfig((prev) => ({ ...prev, congratsMode: opt.id }));
+                        }}
+                        className={`rounded-lg border px-2.5 py-2 text-xs font-semibold transition-colors ${
+                          active
+                            ? 'border-blue-600 bg-blue-50 text-blue-900'
+                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {aiSoundConfig.congratsMode === 'AI_VOICE' && (
+                  <div className="mt-3 space-y-2 rounded-lg border border-blue-200 bg-blue-50/40 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold text-blue-950">
+                        Custom AI Congratulation Message
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void playVictoryCelebration({
+                            teamLabel: resolvedBlueLabel,
+                            players: resolvedBluePlayers,
+                            blueScore: maxSteps,
+                            coralScore: Math.max(0, maxSteps - 2),
+                            isBlueWin: true,
+                            forceUnmute: true,
+                            surfaceErrors: true,
+                          })
+                        }
+                        disabled={testingCongratsAudio}
+                        className="inline-flex items-center gap-1 rounded border border-blue-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-blue-800 hover:bg-blue-50 disabled:opacity-60"
+                      >
+                        {testingCongratsAudio ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Volume2 className="h-3 w-3" />
+                        )}
+                        Test Congrats
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      Placeholders: <span className="font-mono font-semibold text-slate-700">{'{team}'}</span>,{' '}
+                      <span className="font-mono font-semibold text-slate-700">{'{players}'}</span>,{' '}
+                      <span className="font-mono font-semibold text-slate-700">{'{score}'}</span>
+                    </p>
+                    <div className="flex flex-wrap gap-1">
+                      {CONGRATS_PHRASE_PRESETS.map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() =>
+                            setAiSoundConfig((prev) => ({ ...prev, congratsTemplate: preset }))
+                          }
+                          className={`rounded border px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                            aiSoundConfig.congratsTemplate === preset
+                              ? 'border-blue-600 bg-blue-600 text-white'
+                              : 'border-blue-200 bg-white text-blue-800 hover:bg-blue-50'
+                          }`}
+                        >
+                          {preset}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      type="text"
+                      maxLength={180}
+                      value={aiSoundConfig.congratsTemplate}
+                      onChange={(e) =>
+                        setAiSoundConfig((prev) => ({
+                          ...prev,
+                          congratsTemplate: e.target.value,
+                        }))
+                      }
+                      placeholder={DEFAULT_CONGRATS_PHRASE}
+                      className="w-full rounded border border-blue-200 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-blue-600 focus:outline-none"
+                    />
+                  </div>
+                )}
+
+                {aiSoundConfig.congratsMode === 'UPLOADED_AUDIO' && (
+                  <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50/40 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-xs text-slate-700">
+                        <Music className="h-4 w-4 text-amber-600 shrink-0" />
+                        <span className="font-medium truncate max-w-[240px]">
+                          {congratsAudio ? congratsAudio.name : 'No audio uploaded yet'}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-amber-900 hover:bg-amber-50">
+                          <Upload className="h-3 w-3" />
+                          {congratsAudio ? 'Replace Audio' : 'Upload Audio'}
+                          <input
+                            type="file"
+                            accept="audio/*"
+                            className="sr-only"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              handleCongratsAudioUpload(file, true);
+                              e.target.value = '';
+                            }}
+                          />
+                        </label>
+                        {congratsAudio && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void playVictoryCelebration({
+                                  teamLabel: resolvedBlueLabel,
+                                  players: resolvedBluePlayers,
+                                  blueScore: maxSteps,
+                                  coralScore: Math.max(0, maxSteps - 2),
+                                  isBlueWin: true,
+                                  forceUnmute: true,
+                                  surfaceErrors: true,
+                                })
+                              }
+                              className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                            >
+                              <Volume2 className="h-3 w-3 text-blue-600" />
+                              Play
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleClearCongratsAudio}
+                              className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-white px-2 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-50"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                              Remove
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {congratsAudioError && (
+                  <p className="mt-2 text-xs font-medium text-rose-700">{congratsAudioError}</p>
+                )}
+              </div>
             </div>
           </div>
 
@@ -2334,10 +2777,10 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
             aria-modal="true"
             aria-labelledby="winner-congrats-title"
             className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 p-4 backdrop-blur-xs"
-            onClick={() => setShowWinPopup(false)}
+            onClick={closeWinPopup}
           >
             <div
-              className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+              className="relative max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl"
               onClick={(e) => e.stopPropagation()}
             >
               {/* Colored Top Celebration Header */}
@@ -2352,7 +2795,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
               >
                 <button
                   type="button"
-                  onClick={() => setShowWinPopup(false)}
+                  onClick={closeWinPopup}
                   aria-label="Close congratulation popup"
                   className="absolute right-3.5 top-3.5 rounded-lg p-1.5 text-white/80 transition-colors hover:bg-white/15 hover:text-white"
                 >
@@ -2426,6 +2869,202 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                   })}
                 </div>
 
+                {/* Customizable Congratulation Sound Controls */}
+                <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50/80 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
+                      <Volume2 className="h-4 w-4 text-blue-600" />
+                      Congratulation Sound
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void playVictoryCelebration({
+                            teamLabel: winningTeamLabel,
+                            players: winningPlayers,
+                            blueScore: completedSession.bluePulls,
+                            coralScore: completedSession.coralPulls,
+                            isBlueWin,
+                            isDraw,
+                            forceUnmute: true,
+                            surfaceErrors: true,
+                          })
+                        }
+                        disabled={testingCongratsAudio}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
+                      >
+                        {testingCongratsAudio ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Play className="h-3 w-3" />
+                        )}
+                        {testingCongratsAudio ? 'Generating...' : 'Play Celebration'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => soundFx.stopAiVoice()}
+                        className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+                      >
+                        <Square className="h-3 w-3" />
+                        Stop
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Source Switcher: AI Voice vs Upload Audio vs Chime */}
+                  <div className="mt-3 grid grid-cols-3 gap-1.5">
+                    {(
+                      [
+                        { id: 'AI_VOICE', label: 'AI Voice' },
+                        { id: 'UPLOADED_AUDIO', label: 'Upload Audio' },
+                        { id: 'CHIME_ONLY', label: 'Fanfare Chime' },
+                      ] as const
+                    ).map((opt) => {
+                      const active = aiSoundConfig.congratsMode === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => {
+                            setCongratsAudioError(null);
+                            setAiSoundConfig((prev) => ({ ...prev, congratsMode: opt.id }));
+                          }}
+                          className={`rounded-lg border px-2 py-1.5 text-xs font-semibold transition-colors ${
+                            active
+                              ? 'border-blue-600 bg-blue-600 text-white'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {aiSoundConfig.congratsMode === 'AI_VOICE' && (
+                    <div className="mt-3 space-y-2.5">
+                      <div className="flex flex-wrap items-center gap-1">
+                        {AI_VOICE_OPTIONS.map((v) => {
+                          const active = aiSoundConfig.voiceName === v.id;
+                          return (
+                            <button
+                              key={v.id}
+                              type="button"
+                              onClick={() =>
+                                setAiSoundConfig((prev) => ({ ...prev, voiceName: v.id }))
+                              }
+                              className={`rounded-md border px-2 py-0.5 text-[11px] font-semibold transition-colors ${
+                                active
+                                  ? 'border-indigo-600 bg-indigo-50 text-indigo-800'
+                                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100'
+                              }`}
+                            >
+                              {v.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="flex flex-wrap gap-1">
+                        {CONGRATS_PHRASE_PRESETS.map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() =>
+                              setAiSoundConfig((prev) => ({ ...prev, congratsTemplate: preset }))
+                            }
+                            className={`rounded border px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                              aiSoundConfig.congratsTemplate === preset
+                                ? 'border-blue-600 bg-blue-100 text-blue-900'
+                                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100'
+                            }`}
+                          >
+                            {preset}
+                          </button>
+                        ))}
+                      </div>
+
+                      <input
+                        type="text"
+                        maxLength={180}
+                        value={aiSoundConfig.congratsTemplate}
+                        onChange={(e) =>
+                          setAiSoundConfig((prev) => ({
+                            ...prev,
+                            congratsTemplate: e.target.value,
+                          }))
+                        }
+                        placeholder={DEFAULT_CONGRATS_PHRASE}
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-900 focus:border-blue-600 focus:outline-none"
+                      />
+
+                      <div className="rounded-md bg-white px-2.5 py-1.5 text-[11px] text-slate-600 border border-slate-200/80">
+                        <span className="font-semibold text-slate-700">Preview: </span>
+                        {resolveCongratsText(
+                          aiSoundConfig.congratsTemplate,
+                          winningTeamLabel,
+                          winningPlayers,
+                          completedSession.bluePulls,
+                          completedSession.coralPulls
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {aiSoundConfig.congratsMode === 'UPLOADED_AUDIO' && (
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white p-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Music className="h-4 w-4 text-amber-600 shrink-0" />
+                        <div className="min-w-0">
+                          <div className="truncate text-xs font-semibold text-slate-800">
+                            {congratsAudio ? congratsAudio.name : 'No audio file uploaded'}
+                          </div>
+                          <div className="text-[10px] text-slate-500">
+                            MP3, WAV, M4A, OGG (max 4 MB)
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-800 hover:bg-blue-100">
+                          <Upload className="h-3.5 w-3.5" />
+                          {congratsAudio ? 'Change Audio' : 'Upload Audio'}
+                          <input
+                            type="file"
+                            accept="audio/*"
+                            className="sr-only"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              handleCongratsAudioUpload(file, true);
+                              e.target.value = '';
+                            }}
+                          />
+                        </label>
+                        {congratsAudio && (
+                          <button
+                            type="button"
+                            onClick={handleClearCongratsAudio}
+                            aria-label="Remove uploaded audio"
+                            className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {aiSoundConfig.congratsMode === 'CHIME_ONLY' && (
+                    <p className="mt-2.5 text-[11px] text-slate-500">
+                      Plays the classic victory fanfare chime when a team wins.
+                    </p>
+                  )}
+
+                  {congratsAudioError && (
+                    <p className="mt-2 text-xs font-medium text-rose-700">{congratsAudioError}</p>
+                  )}
+                </div>
+
                 <div className="mt-6 flex flex-wrap items-center justify-center gap-3 border-t border-slate-100 pt-5">
                   <button
                     type="button"
@@ -2437,7 +3076,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setShowWinPopup(false)}
+                    onClick={closeWinPopup}
                     className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50"
                   >
                     View Match Summary

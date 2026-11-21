@@ -154,6 +154,50 @@ class SoundEffects {
     }
   }
 
+  public async playDataUrlAudio(dataUrl: string): Promise<void> {
+    if (this.muted || typeof window === 'undefined' || !dataUrl) return;
+    this.stopAiVoice();
+
+    const ctx = this.getContext();
+    if (ctx) {
+      try {
+        if (ctx.state === 'suspended') {
+          await ctx.resume();
+        }
+        const response = await fetch(dataUrl);
+        const arrayBuf = await response.arrayBuffer();
+        const audioBuffer = await ctx.decodeAudioData(arrayBuf);
+        if (this.muted) return;
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(ctx.destination);
+        this.activeVoiceSource = source;
+        source.onended = () => {
+          if (this.activeVoiceSource === source) {
+            this.activeVoiceSource = null;
+          }
+        };
+        source.start(0);
+        return;
+      } catch {
+        // Fall back to HTMLAudioElement if decodeAudioData is unsupported
+      }
+    }
+
+    try {
+      const audio = new Audio(dataUrl);
+      this.activeVoiceAudio = audio;
+      audio.onended = () => {
+        if (this.activeVoiceAudio === audio) {
+          this.activeVoiceAudio = null;
+        }
+      };
+      await audio.play();
+    } catch {
+      // Ignore autoplay blocks if browser rejects playback
+    }
+  }
+
   public playPullCorrect(streak = 1) {
     const ctx = this.getContext();
     if (!ctx) return;
