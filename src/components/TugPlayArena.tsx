@@ -2097,8 +2097,100 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   // ==================== RENDER: ACTIVE GAMEPLAY ====================
   const blueLocked = Date.now() < blueLockedUntil;
   const coralLocked = Date.now() < coralLockedUntil;
-  const activeBluePlayerName = resolvedBluePlayers[blueTurnIndex % resolvedBluePlayers.length];
-  const activeCoralPlayerName = resolvedCoralPlayers[coralTurnIndex % resolvedCoralPlayers.length];
+  const blueIdx = blueTurnIndex % resolvedBluePlayers.length;
+  const nextBlueIdx = (blueTurnIndex + 1) % resolvedBluePlayers.length;
+  const activeBluePlayerName = resolvedBluePlayers[blueIdx];
+  const nextBluePlayerName =
+    resolvedBluePlayers.length > 1 ? resolvedBluePlayers[nextBlueIdx] : null;
+  const activeBluePhoto = teamsState.bluePhotos[blueIdx] || '';
+  const nextBluePhoto =
+    resolvedBluePlayers.length > 1 ? teamsState.bluePhotos[nextBlueIdx] || '' : '';
+
+  const coralIdx = coralTurnIndex % resolvedCoralPlayers.length;
+  const nextCoralIdx = (coralTurnIndex + 1) % resolvedCoralPlayers.length;
+  const activeCoralPlayerName = resolvedCoralPlayers[coralIdx];
+  const nextCoralPlayerName =
+    resolvedCoralPlayers.length > 1 ? resolvedCoralPlayers[nextCoralIdx] : null;
+  const activeCoralPhoto = teamsState.coralPhotos[coralIdx] || '';
+  const nextCoralPhoto =
+    resolvedCoralPlayers.length > 1 ? teamsState.coralPhotos[nextCoralIdx] || '' : '';
+
+  const renderTurnBanner = (
+    tone: 'BLUE' | 'CORAL',
+    activeName: string,
+    activePhoto: string,
+    activeIndex: number,
+    nextName: string | null,
+    nextPhoto: string,
+    nextIndex: number
+  ) => {
+    const isBlue = tone === 'BLUE';
+    return (
+      <div
+        className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 ${
+          isBlue
+            ? 'border-blue-200 bg-blue-50/70'
+            : 'border-rose-200 bg-rose-50/70'
+        }`}
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          {activePhoto ? (
+            <img
+              src={activePhoto}
+              alt={activeName}
+              className={`h-7 w-7 rounded-full border object-cover shrink-0 ${
+                isBlue ? 'border-blue-300' : 'border-rose-300'
+              }`}
+            />
+          ) : (
+            <div
+              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white ${
+                isBlue ? 'bg-blue-600' : 'bg-rose-600'
+              }`}
+            >
+              {getPlayerInitials(activeName, activeIndex)}
+            </div>
+          )}
+          <div className="min-w-0">
+            <div
+              className={`text-[10px] font-bold uppercase tracking-wider ${
+                isBlue ? 'text-blue-700' : 'text-rose-700'
+              }`}
+            >
+              Playing Now
+            </div>
+            <div className="truncate text-sm font-bold text-slate-900">
+              {activeName}
+            </div>
+          </div>
+        </div>
+
+        {nextName && (
+          <div className="flex min-w-0 items-center gap-2 border-l border-slate-200/80 pl-3">
+            {nextPhoto ? (
+              <img
+                src={nextPhoto}
+                alt={nextName}
+                className="h-6 w-6 rounded-full border border-slate-300 object-cover opacity-85 shrink-0"
+              />
+            ) : (
+              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-200 text-[10px] font-bold text-slate-700">
+                {getPlayerInitials(nextName, nextIndex)}
+              </div>
+            )}
+            <div className="min-w-0 text-right sm:text-left">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                Up Next
+              </div>
+              <div className="truncate text-xs font-semibold text-slate-700">
+                {nextName}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const renderPromptDisplay = (q: AdditionQuestion) => (
     <div className="space-y-3 text-center">
@@ -2185,23 +2277,29 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
         coralLabel={resolvedCoralLabel}
         bluePlayers={resolvedBluePlayers}
         coralPlayers={resolvedCoralPlayers}
-        activeBlueIndex={blueTurnIndex % resolvedBluePlayers.length}
-        activeCoralIndex={mode === 'DUEL_2P' ? coralTurnIndex % resolvedCoralPlayers.length : undefined}
+        activeBlueIndex={blueIdx}
+        activeCoralIndex={mode === 'DUEL_2P' ? coralIdx : undefined}
       />
 
       {/* Active Question Zone */}
       {mode === 'SOLO_BOT' ? (
         <div className="mx-auto max-w-3xl rounded-xl border border-slate-200 bg-white p-6">
-          {/* Active Player & Bot Pace Meter */}
-          <div className="mb-5">
+          {/* Active Player & Next Player Strip Above Question */}
+          <div className="mb-4 space-y-2.5">
+            {renderTurnBanner(
+              'BLUE',
+              activeBluePlayerName,
+              activeBluePhoto,
+              blueIdx,
+              nextBluePlayerName,
+              nextBluePhoto,
+              nextBlueIdx
+            )}
             <div className="flex items-center justify-between text-xs text-slate-500">
-              <span>
-                Pulling Now: <strong className="text-blue-700">{activeBluePlayerName}</strong> ·{' '}
-                {blueQuestion.groupLabel ?? STRATEGY_LABELS[blueQuestion.strategy]}
-              </span>
+              <span>{blueQuestion.groupLabel ?? STRATEGY_LABELS[blueQuestion.strategy]}</span>
               <span className="font-mono tabular-nums">{resolvedCoralLabel} Pull Timer</span>
             </div>
-            <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
               <div
                 className="h-full bg-rose-500 transition-all duration-100"
                 style={{ width: `${botProgress}%` }}
@@ -2304,14 +2402,22 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
         <div className="grid gap-5 md:grid-cols-2">
           {/* TEAM BLUE SIDE */}
           <div className="rounded-xl border border-blue-200 bg-white p-6">
-            <div className="flex items-center justify-between text-xs font-semibold">
-              <span className="text-blue-700">
-                {resolvedBlueLabel} · Pulling: {activeBluePlayerName} (Keys 1–4)
-              </span>
+            <div className="mb-3 flex items-center justify-between text-xs font-semibold">
+              <span className="text-blue-700">{resolvedBlueLabel} (Keys 1–4)</span>
               <span className="font-mono tabular-nums text-slate-500">
                 Pulls: {bluePulls} · Streak: {blueStreak}
               </span>
             </div>
+
+            {renderTurnBanner(
+              'BLUE',
+              activeBluePlayerName,
+              activeBluePhoto,
+              blueIdx,
+              nextBluePlayerName,
+              nextBluePhoto,
+              nextBlueIdx
+            )}
 
             <div className="my-5 flex min-h-[64px] items-center justify-center">
               {renderPromptDisplay(blueQuestion)}
@@ -2358,14 +2464,22 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
 
           {/* TEAM CORAL SIDE */}
           <div className="rounded-xl border border-rose-200 bg-white p-6">
-            <div className="flex items-center justify-between text-xs font-semibold">
-              <span className="text-rose-700">
-                {resolvedCoralLabel} · Pulling: {activeCoralPlayerName} (Keys 7–0)
-              </span>
+            <div className="mb-3 flex items-center justify-between text-xs font-semibold">
+              <span className="text-rose-700">{resolvedCoralLabel} (Keys 7–0)</span>
               <span className="font-mono tabular-nums text-slate-500">
                 Pulls: {coralPulls} · Streak: {coralStreak}
               </span>
             </div>
+
+            {renderTurnBanner(
+              'CORAL',
+              activeCoralPlayerName,
+              activeCoralPhoto,
+              coralIdx,
+              nextCoralPlayerName,
+              nextCoralPhoto,
+              nextCoralIdx
+            )}
 
             <div className="my-5 flex min-h-[64px] items-center justify-center">
               {renderPromptDisplay(coralQuestion)}
