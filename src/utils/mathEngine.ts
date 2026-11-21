@@ -705,6 +705,7 @@ export function generateQuestion(
       b,
       answer: isNumeric ? numericAns : 0,
       answerText: chosen.answer || correctChoice?.text || '',
+      ...(chosen.explanation ? { explanation: chosen.explanation } : {}),
       choices: shuffled,
       correctChoiceIndex: newCorrectIdx,
       strategy: classifyStrategy(a, b),
@@ -846,7 +847,7 @@ export function exportAttemptsCsv(sessions: MatchSession[]): void {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.setAttribute('download', `ropesum-assessment-${new Date().toISOString().slice(0, 10)}.csv`);
+  link.setAttribute('download', `tugofwar-assessment-${new Date().toISOString().slice(0, 10)}.csv`);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

@@ -19,6 +19,7 @@ import {
   toggleGroupActiveInCloud,
   toggleQuestionActiveInCloud,
 } from './utils/cloudSync';
+import { BUNDLED_REPO_QUESTIONS } from './utils/bundledQuestions';
 import { TugPlayArena } from './components/TugPlayArena';
 import { WelcomeDashboard } from './components/WelcomeDashboard';
 import { QuestionBankView } from './components/QuestionBankView';
@@ -28,6 +29,7 @@ import { HowToPlayView } from './components/HowToPlayView';
 
 const SESSIONS_STORAGE_KEY = 'ropesum_sessions_v1';
 const CUSTOM_QUESTIONS_STORAGE_KEY = 'ropesum_custom_questions_v1';
+const BUNDLED_ACTIVE_STORAGE_KEY = 'ropesum_bundled_active_v1';
 
 function migrateRawQuestions(rawList: unknown[]): CustomQuestion[] {
   return rawList.map((raw) => {
@@ -105,6 +107,17 @@ export default function App() {
     return stored;
   });
 
+  const [bundledActiveOverrides, setBundledActiveOverrides] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = localStorage.getItem(BUNDLED_ACTIVE_STORAGE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, boolean>) : {};
+    } catch {
+      return {};
+    }
+  });
+
   const [user, setUser] = useState<User | null>(null);
   const [publicCloudQuestions, setPublicCloudQuestions] = useState<CustomQuestion[]>([]);
   const [ownerCloudQuestions, setOwnerCloudQuestions] = useState<CustomQuestion[]>([]);
@@ -151,6 +164,17 @@ export default function App() {
       // Ignore storage quota errors
     }
   }, [localQuestions]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        BUNDLED_ACTIVE_STORAGE_KEY,
+        JSON.stringify(bundledActiveOverrides)
+      );
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [bundledActiveOverrides]);
 
   // Firebase Auth listener
   useEffect(() => {
@@ -221,6 +245,7 @@ export default function App() {
           `Synced ${saved.length} ${saved.length === 1 ? 'question' : 'questions'} to Cloud — now available on Vercel & across devices.`
         );
       } catch (err) {
+        autoSyncedUidRef.current = null;
         setCloudError(
           err instanceof Error ? err.message : 'Failed to sync folders to Cloud.'
         );
@@ -241,14 +266,27 @@ export default function App() {
     }
   }, [syncLocalQuestionsToCloud, unsyncedLocalQuestions, user]);
 
-  // Merge owner cloud questions, public active cloud questions, and any local-only questions
+  const effectiveBundledQuestions = useMemo(
+    () =>
+      BUNDLED_REPO_QUESTIONS.map((q) => ({
+        ...q,
+        isActive:
+          typeof bundledActiveOverrides[q.id] === 'boolean'
+            ? bundledActiveOverrides[q.id]
+            : q.isActive,
+        source: 'BUNDLED' as const,
+      })),
+    [bundledActiveOverrides]
+  );
+
+  // Merge owner cloud questions, public active cloud questions, local-only questions, and bundled repo folders
   const customQuestions = useMemo(() => {
     const byId = new Map<string, CustomQuestion>();
     const seenSig = new Set<string>();
 
     const addIfNew = (q: CustomQuestion) => {
       if (byId.has(q.id)) return;
-      const sig = `${q.groupType}::${q.groupName}::${q.prompt}`;
+      const sig = `${q.groupType}::${q.groupName.trim().toLowerCase()}::${q.prompt.trim()}`;
       if (seenSig.has(sig)) return;
       byId.set(q.id, q);
       seenSig.add(sig);
@@ -256,10 +294,16 @@ export default function App() {
 
     ownerCloudQuestions.forEach(addIfNew);
     publicCloudQuestions.forEach(addIfNew);
-    unsyncedLocalQuestions.forEach(addIfNew);
+    unsyncedLocalQuestions.forEach((q) => addIfNew({ ...q, source: q.source ?? 'LOCAL' }));
+    effectiveBundledQuestions.forEach(addIfNew);
 
     return Array.from(byId.values()).sort((a, b) => b.createdAt - a.createdAt);
-  }, [ownerCloudQuestions, publicCloudQuestions, unsyncedLocalQuestions]);
+  }, [
+    effectiveBundledQuestions,
+    ownerCloudQuestions,
+    publicCloudQuestions,
+    unsyncedLocalQuestions,
+  ]);
 
   const missedPairs = extractMissedPairs(sessions);
 
@@ -364,11 +408,16 @@ export default function App() {
   const handleToggleQuestionActive = async (id: string) => {
     const target = customQuestions.find((q) => q.id === id);
     if (!target) return;
-    if (user && (!target.ownerId || target.ownerId === user.uid)) {
-      if (target.ownerId === user.uid) {
-        await toggleQuestionActiveInCloud(target, user.uid);
-        return;
-      }
+    if (target.source === 'BUNDLED') {
+      setBundledActiveOverrides((prev) => ({
+        ...prev,
+        [id]: !target.isActive,
+      }));
+      return;
+    }
+    if (user && target.ownerId === user.uid) {
+      await toggleQuestionActiveInCloud(target, user.uid);
+      return;
     }
     setLocalQuestions((prev) =>
       prev.map((q) => (q.id === id ? { ...q, isActive: !q.isActive } : q))
@@ -383,6 +432,18 @@ export default function App() {
     const groupItems = customQuestions.filter(
       (q) => q.groupType === groupType && q.groupName === groupName
     );
+    const bundledIds = groupItems
+      .filter((q) => q.source === 'BUNDLED')
+      .map((q) => q.id);
+    if (bundledIds.length > 0) {
+      setBundledActiveOverrides((prev) => {
+        const next = { ...prev };
+        for (const bid of bundledIds) {
+          next[bid] = active;
+        }
+        return next;
+      });
+    }
     if (user) {
       const ownedItems = groupItems.filter((q) => q.ownerId === user.uid);
       if (ownedItems.length > 0) {
@@ -400,6 +461,7 @@ export default function App() {
 
   const handleDeleteQuestion = async (id: string) => {
     const target = customQuestions.find((q) => q.id === id);
+    if (target?.source === 'BUNDLED') return;
     if (user && target?.ownerId === user.uid) {
       await deleteQuestionInCloud(id);
     }
@@ -440,7 +502,7 @@ export default function App() {
             onClick={() => setActiveView('WELCOME')}
             className="font-display text-xl font-extrabold tracking-tight text-slate-900 whitespace-nowrap shrink-0"
           >
-            RopeSum
+            TUGofWAR
           </button>
 
           {/* Zone 2: 5 concise single-line text navigation links */}

@@ -100,6 +100,7 @@ function docToCustomQuestion(id: string, data: Record<string, unknown>): CustomQ
     groupName,
     isActive: Boolean(data.isActive),
     isPublished: typeof data.isPublished === 'boolean' ? data.isPublished : Boolean(data.isActive),
+    source: 'CLOUD',
     createdAt: toEpochMs(data.createdAt),
   };
 }
@@ -588,6 +589,7 @@ export function exportQuestionsJsonFile(
       a: q.a,
       b: q.b,
       answer: q.answer,
+      ...(q.explanation ? { explanation: q.explanation } : {}),
       choices: q.choices,
       correctChoiceIndex: q.correctChoiceIndex,
       groupType: q.groupType,
@@ -647,6 +649,9 @@ export function parseImportedQuestionsJson(rawJson: string): CustomQuestion[] {
         a: typeof q.a === 'number' ? q.a : undefined,
         b: typeof q.b === 'number' ? q.b : undefined,
         answer: String(q.answer ?? choices[ci]?.text ?? ''),
+        ...(typeof q.explanation === 'string' && q.explanation.trim()
+          ? { explanation: q.explanation.trim() }
+          : {}),
         choices,
         correctChoiceIndex: ci,
         groupType: q.groupType === 'TOPIC' ? 'TOPIC' : 'FOLDER',

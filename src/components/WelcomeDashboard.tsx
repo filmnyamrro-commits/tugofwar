@@ -135,7 +135,7 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
               Welcome Board · Interactive Classroom Tug-of-War
             </div>
             <h1 className="font-display text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">
-              Welcome to RopeSum
+              Welcome to TUGofWAR
             </h1>
             <p className="text-sm leading-relaxed text-slate-600 sm:text-base">
               Run lively team or solo Tug-of-War quizzes with instant voice feedback, custom question folders, live turn lineups, and printable PDF assessment report cards.

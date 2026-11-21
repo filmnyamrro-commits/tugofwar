@@ -110,7 +110,7 @@ export function buildReportCardSummary(
   const hasCustomQuestions = allAttempts.some(({ att }) => Boolean(att.isCustom));
   const defaultDescription = hasCustomQuestions
     ? `Formative Tug-of-War team assessment measuring student accuracy and recall speed across questions from the "${folderName}" question folder.`
-    : `Interactive RopeSum Tug-of-War formative assessment evaluating addition fluency (1–20), mental math strategy use, and response speed on ${folderName}.`;
+    : `Interactive TUGofWAR formative assessment evaluating addition fluency (1–20), mental math strategy use, and response speed on ${folderName}.`;
 
   const defaultCompetencyTarget = hasCustomQuestions
     ? `Demonstrate >= 80% accuracy and confident recall on "${folderName}" (${topicsList}) under timed team play.`
@@ -539,7 +539,7 @@ export function downloadAssessmentPdf({
     doc.setFontSize(8);
     doc.setTextColor(148, 163, 184);
     doc.text(
-      `RopeSum Formative Assessment  |  Page ${p} of ${totalPages}`,
+      `TUGofWAR Formative Assessment  |  Page ${p} of ${totalPages}`,
       pageWidth / 2,
       pageHeight - 8,
       { align: 'center' }

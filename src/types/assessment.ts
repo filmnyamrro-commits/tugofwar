@@ -36,12 +36,14 @@ export interface CustomQuestion {
   a?: number;
   b?: number;
   answer: string;
+  explanation?: string;
   choices: QuestionChoice[];
   correctChoiceIndex: number;
   groupType: QuestionGroupType;
   groupName: string;
   isActive: boolean;
   isPublished?: boolean;
+  source?: 'BUNDLED' | 'CLOUD' | 'LOCAL';
   createdAt: number;
 }
 
@@ -53,6 +55,7 @@ export interface AdditionQuestion {
   b: number;
   answer: number;
   answerText: string;
+  explanation?: string;
   choices: QuestionChoice[];
   correctChoiceIndex: number;
   strategy: MathStrategy;
