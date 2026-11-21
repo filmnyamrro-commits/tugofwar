@@ -12,6 +12,7 @@ interface TugArenaSvgProps {
   coralPlayers?: string[];
   activeBlueIndex?: number;
   activeCoralIndex?: number;
+  backgroundImageUrl?: string | null;
 }
 
 const SKIN_TONES = ['#FDBA74', '#FDE68A', '#FED7AA', '#E5B887', '#FCD34D', '#D9A066'];
@@ -47,6 +48,7 @@ export const TugArenaSvg: React.FC<TugArenaSvgProps> = ({
   coralPlayers = ['Bot 1', 'Bot 2', 'Bot 3'],
   activeBlueIndex,
   activeCoralIndex,
+  backgroundImageUrl,
 }) => {
   const clamped = Math.max(-maxSteps, Math.min(maxSteps, ropePosition));
   const stepPx = 192 / maxSteps;
@@ -61,6 +63,7 @@ export const TugArenaSvg: React.FC<TugArenaSvgProps> = ({
   const ropeLeft = Math.min(200, (bluePositions[0] ?? 240) - 25);
   const ropeRight = Math.max(760, (coralPositions[coralPositions.length - 1] ?? 720) + 25);
   const ropeWidth = ropeRight - ropeLeft;
+  const hasCustomBg = Boolean(backgroundImageUrl);
 
   return (
     <div className="w-full select-none">
@@ -139,34 +142,60 @@ export const TugArenaSvg: React.FC<TugArenaSvgProps> = ({
             </pattern>
           </defs>
 
-          {/* Upper Sky Backdrop */}
-          <rect x="0" y="0" width="960" height="195" fill="url(#skyField)" />
-          <line x1="0" y1="195" x2="960" y2="195" stroke="#CBD5E1" strokeWidth="2" />
+          {hasCustomBg && backgroundImageUrl ? (
+            <>
+              {/* Uploaded JPEG Photo auto-fitted to full arena dimensions */}
+              <image
+                href={backgroundImageUrl}
+                x="0"
+                y="0"
+                width="960"
+                height="270"
+                preserveAspectRatio="xMidYMid slice"
+              />
+              {/* Subtle legibility scrims so players, rope, and lines stay crisp */}
+              <rect x="0" y="0" width="960" height="195" fill="#0F172A" opacity="0.14" />
+              <line x1="0" y1="195" x2="960" y2="195" stroke="#FFFFFF" strokeOpacity="0.65" strokeWidth="2" />
+              <rect x="0" y="195" width="960" height="75" fill="#0F172A" opacity="0.28" />
+            </>
+          ) : (
+            <>
+              {/* Upper Sky Backdrop */}
+              <rect x="0" y="0" width="960" height="195" fill="url(#skyField)" />
+              <line x1="0" y1="195" x2="960" y2="195" stroke="#CBD5E1" strokeWidth="2" />
 
-          {/* Grass Turf Field */}
-          <rect x="0" y="195" width="960" height="75" fill="url(#turfGrad)" />
+              {/* Grass Turf Field */}
+              <rect x="0" y="195" width="960" height="75" fill="url(#turfGrad)" />
+            </>
+          )}
 
           {/* Left Victory Zone (Blue) */}
-          <rect x="0" y="195" width="288" height="75" fill="#DBEAFE" opacity="0.6" />
+          <rect x="0" y="195" width="288" height="75" fill="#DBEAFE" opacity={hasCustomBg ? 0.34 : 0.6} />
           <line x1="288" y1="178" x2="288" y2="270" stroke="#2563EB" strokeWidth="3" strokeDasharray="6 4" />
           <line x1="288" y1="118" x2="288" y2="195" stroke="#1E40AF" strokeWidth="3" />
           <polygon points="288,120 252,132 288,144" fill="#2563EB" />
+          {hasCustomBg && (
+            <rect x="64" y="221" width="160" height="24" rx="6" fill="#FFFFFF" opacity="0.88" />
+          )}
           <text x="144" y="238" textAnchor="middle" fill="#1E40AF" fontSize="13" fontWeight="700" fontFamily="Outfit, sans-serif">
             {truncateName(blueLabel.toUpperCase(), 14)} WIN LINE
           </text>
 
           {/* Right Victory Zone (Coral) */}
-          <rect x="672" y="195" width="288" height="75" fill="#FFE4E6" opacity="0.6" />
+          <rect x="672" y="195" width="288" height="75" fill="#FFE4E6" opacity={hasCustomBg ? 0.34 : 0.6} />
           <line x1="672" y1="178" x2="672" y2="270" stroke="#E11D48" strokeWidth="3" strokeDasharray="6 4" />
           <line x1="672" y1="118" x2="672" y2="195" stroke="#9F1239" strokeWidth="3" />
           <polygon points="672,120 708,132 672,144" fill="#E11D48" />
+          {hasCustomBg && (
+            <rect x="736" y="221" width="160" height="24" rx="6" fill="#FFFFFF" opacity="0.88" />
+          )}
           <text x="816" y="238" textAnchor="middle" fill="#9F1239" fontSize="13" fontWeight="700" fontFamily="Outfit, sans-serif">
             {truncateName(coralLabel.toUpperCase(), 14)} WIN LINE
           </text>
 
           {/* Center Pit / Chalk Line */}
           <line x1="480" y1="182" x2="480" y2="265" stroke="#FFFFFF" strokeWidth="4" />
-          <circle cx="480" cy="222" r="14" fill="none" stroke="#94A3B8" strokeWidth="1.5" strokeDasharray="3 3" />
+          <circle cx="480" cy="222" r="14" fill="none" stroke={hasCustomBg ? '#FFFFFF' : '#94A3B8'} strokeWidth="1.5" strokeDasharray="3 3" />
 
           {/* Yardage Ticks */}
           {Array.from({ length: maxSteps * 2 - 1 }).map((_, idx) => {

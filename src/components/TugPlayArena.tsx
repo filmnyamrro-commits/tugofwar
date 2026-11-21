@@ -26,6 +26,7 @@ import {
   SlidersHorizontal,
   Square,
   LayoutDashboard,
+  Image as ImageIcon,
 } from 'lucide-react';
 import {
   AdditionQuestion,
@@ -75,6 +76,7 @@ const BOT_INTERVAL_MS: Record<BotDifficulty, number> = {
 
 const TEAMS_STORAGE_KEY = 'ropesum_teams_v1';
 const AI_SOUND_STORAGE_KEY = 'ropesum_ai_sound_v1';
+const ARENA_BG_STORAGE_KEY = 'ropesum_arena_bg_v1';
 
 type AiVoiceName = 'Kore' | 'Puck' | 'Fenrir' | 'Charon' | 'Zephyr';
 
@@ -335,6 +337,50 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
         coralPhotos: prev.coralPhotos.map((p, i) => (i === index ? '' : p)),
       };
     });
+  };
+
+  // Custom Arena JPEG Background State (auto-fitted to 960x270 arena)
+  const [arenaBackgroundUrl, setArenaBackgroundUrl] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(ARENA_BG_STORAGE_KEY) || null;
+    } catch {
+      return null;
+    }
+  });
+  const [arenaBgError, setArenaBgError] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      if (arenaBackgroundUrl) {
+        localStorage.setItem(ARENA_BG_STORAGE_KEY, arenaBackgroundUrl);
+      } else {
+        localStorage.removeItem(ARENA_BG_STORAGE_KEY);
+      }
+    } catch {
+      // Ignore storage quota errors while keeping current session background active
+    }
+  }, [arenaBackgroundUrl]);
+
+  const handleArenaBackgroundUpload = async (file?: File) => {
+    if (!file) return;
+    setArenaBgError(null);
+    const isJpeg =
+      file.type === 'image/jpeg' || /\.(jpe?g)$/i.test(file.name);
+    if (!isJpeg) {
+      setArenaBgError('Please upload a JPEG (.jpg or .jpeg) photo for the arena background.');
+      return;
+    }
+    try {
+      const dataUrl = await compressImageFile(file, 1440, 810);
+      setArenaBackgroundUrl(dataUrl);
+    } catch {
+      setArenaBgError('Could not load that JPEG photo. Please try another .jpg/.jpeg file.');
+    }
+  };
+
+  const handleClearArenaBackground = () => {
+    setArenaBgError(null);
+    setArenaBackgroundUrl(null);
   };
 
   const resolvedBluePlayers = teamsState.bluePlayers.map(
@@ -1239,6 +1285,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
           coralLabel={resolvedCoralLabel}
           bluePlayers={resolvedBluePlayers}
           coralPlayers={resolvedCoralPlayers}
+          backgroundImageUrl={arenaBackgroundUrl}
         />
 
         {/* Two-Zone Setup Card */}
@@ -1769,6 +1816,68 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
               </div>
             </div>
 
+            {/* Arena Background Photo (JPEG) */}
+            <div className="border-t border-slate-100 pt-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <ImageIcon className="h-4 w-4 text-blue-600" />
+                  <span className="text-xs font-semibold text-slate-700">
+                    Arena Background Photo (JPEG)
+                  </span>
+                </div>
+                {arenaBackgroundUrl && (
+                  <button
+                    type="button"
+                    onClick={handleClearArenaBackground}
+                    className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    Reset to Default
+                  </button>
+                )}
+              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                Optional: upload any <span className="font-mono font-medium">.jpg</span> or{' '}
+                <span className="font-mono font-medium">.jpeg</span> image — it automatically resizes and fits the Tug-of-War arena field.
+              </p>
+
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                {arenaBackgroundUrl && (
+                  <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
+                    <img
+                      src={arenaBackgroundUrl}
+                      alt="Arena background preview"
+                      className="h-14 w-48 object-cover"
+                    />
+                  </div>
+                )}
+
+                <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-700 transition-colors hover:border-blue-500 hover:bg-blue-50/50 hover:text-blue-700">
+                  <Upload className="h-3.5 w-3.5 text-blue-600" />
+                  <span>{arenaBackgroundUrl ? 'Change JPEG Background' : 'Upload JPEG Background'}</span>
+                  <input
+                    type="file"
+                    accept=".jpg,.jpeg,image/jpeg"
+                    className="hidden"
+                    onChange={(e) => {
+                      void handleArenaBackgroundUpload(e.target.files?.[0]);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+
+                {arenaBackgroundUrl && (
+                  <span className="text-xs font-medium text-emerald-700">
+                    Auto-fitted to arena size
+                  </span>
+                )}
+              </div>
+
+              {arenaBgError && (
+                <p className="mt-2 text-xs font-medium text-rose-700">{arenaBgError}</p>
+              )}
+            </div>
+
             {/* AI Almost-Win Sound Notification */}
             <div className="border-t border-slate-100 pt-5">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2267,6 +2376,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
           coralLabel={resolvedCoralLabel}
           bluePlayers={resolvedBluePlayers}
           coralPlayers={resolvedCoralPlayers}
+          backgroundImageUrl={arenaBackgroundUrl}
         />
 
         <div className="rounded-xl border border-slate-200 bg-white p-6 md:p-8">
@@ -2680,6 +2790,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
         coralPlayers={resolvedCoralPlayers}
         activeBlueIndex={blueIdx}
         activeCoralIndex={mode === 'DUEL_2P' ? coralIdx : undefined}
+        backgroundImageUrl={arenaBackgroundUrl}
       />
 
       {/* Active Question Zone */}
