@@ -91,20 +91,20 @@ interface AiSoundConfig {
 
 const DEFAULT_ALMOST_WIN_MESSAGE =
   'Watch out! {team} is just one pull away from winning!';
-const DEFAULT_CORRECT_PHRASE = 'Good job!';
-const DEFAULT_WRONG_PHRASE = 'Sorry, you are wrong.';
+const DEFAULT_CORRECT_PHRASE = 'Good job, {player}!';
+const DEFAULT_WRONG_PHRASE = 'Oops, try again, {player}.';
 
 const CORRECT_PHRASE_PRESETS = [
-  'Correct!',
-  'Good job!',
-  'Excellent!',
-  'Great work!',
+  'Good job, {player}!',
+  'Correct, {player}!',
+  'Excellent, {player}!',
+  'Great work, {player}!',
 ];
 
 const WRONG_PHRASE_PRESETS = [
-  'Sorry, you are wrong.',
-  'Oops, try again!',
-  'Not quite!',
+  'Oops, try again, {player}.',
+  'Sorry, you are wrong, {player}.',
+  'Not quite, {player}.',
 ];
 
 const AI_VOICE_OPTIONS: Array<{ id: AiVoiceName; label: string; styleLabel: string }> = [
@@ -118,6 +118,23 @@ const AI_VOICE_OPTIONS: Array<{ id: AiVoiceName; label: string; styleLabel: stri
 function resolveAlmostWinText(template: string, teamName: string): string {
   const base = template.trim() || DEFAULT_ALMOST_WIN_MESSAGE;
   return base.replace(/\{team\}/gi, teamName);
+}
+
+function resolveAnswerFeedbackText(
+  template: string,
+  playerName: string,
+  isCorrect: boolean
+): string {
+  const cleanName = playerName.trim() || 'Player';
+  const base =
+    template.trim() || (isCorrect ? DEFAULT_CORRECT_PHRASE : DEFAULT_WRONG_PHRASE);
+  if (/\{player\}/i.test(base)) {
+    return base.replace(/\{player\}/gi, cleanName);
+  }
+  const hasTrailingPunct = /[.!?]$/.test(base);
+  return hasTrailingPunct
+    ? `${base} ${cleanName}!`
+    : `${base}, ${cleanName}${isCorrect ? '!' : '.'}`;
 }
 
 interface SavedTeamsState {
@@ -440,7 +457,10 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   // 2P cooldown lockouts
   const [blueLockedUntil, setBlueLockedUntil] = useState<number>(0);
   const [coralLockedUntil, setCoralLockedUntil] = useState<number>(0);
+  const [blueMissedBy, setBlueMissedBy] = useState<string | null>(null);
+  const [coralMissedBy, setCoralMissedBy] = useState<string | null>(null);
   const [nowTick, setNowTick] = useState<number>(Date.now());
+  const matchEpochRef = useRef<number>(0);
 
   // Bot progress
   const [botProgress, setBotProgress] = useState<number>(0);
@@ -573,20 +593,21 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   );
 
   const playAnswerVoiceFeedback = useCallback(
-    (isCorrect: boolean) => {
+    (isCorrect: boolean, playerName: string) => {
       if (!aiSoundConfig.answerFeedbackEnabled || muted) return;
-      const phrase = (
+      const template = (
         isCorrect ? aiSoundConfig.correctPhrase : aiSoundConfig.wrongPhrase
       ).trim();
-      if (!phrase) return;
+      if (!template) return;
 
-      const cacheKey = `${aiSoundConfig.voiceName}::${phrase}`;
+      const spokenText = resolveAnswerFeedbackText(template, playerName, isCorrect);
+      const cacheKey = `${aiSoundConfig.voiceName}::${spokenText}`;
       const cached = ttsCacheRef.current.get(cacheKey);
       if (cached) {
         void soundFx.playBase64Wav(cached.audioBase64, cached.mimeType);
       } else {
-        soundFx.speakPhrase(phrase);
-        void fetchAiVoiceAudio(phrase, aiSoundConfig.voiceName, false);
+        soundFx.speakPhrase(spokenText);
+        void fetchAiVoiceAudio(spokenText, aiSoundConfig.voiceName, false);
       }
     },
     [
@@ -598,6 +619,49 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       muted,
     ]
   );
+
+  // Pre-warm personalized voice clips for the active and next player on each turn
+  useEffect(() => {
+    if (phase !== 'PLAYING' || !aiSoundConfig.answerFeedbackEnabled || muted) return;
+
+    const namesToWarm = new Set<string>();
+    const bLen = resolvedBluePlayers.length;
+    if (bLen > 0) {
+      namesToWarm.add(resolvedBluePlayers[blueTurnIndex % bLen]);
+      namesToWarm.add(resolvedBluePlayers[(blueTurnIndex + 1) % bLen]);
+    }
+    if (mode === 'DUEL_2P') {
+      const cLen = resolvedCoralPlayers.length;
+      if (cLen > 0) {
+        namesToWarm.add(resolvedCoralPlayers[coralTurnIndex % cLen]);
+        namesToWarm.add(resolvedCoralPlayers[(coralTurnIndex + 1) % cLen]);
+      }
+    }
+
+    namesToWarm.forEach((pName) => {
+      if (aiSoundConfig.correctPhrase.trim()) {
+        const cText = resolveAnswerFeedbackText(aiSoundConfig.correctPhrase, pName, true);
+        void fetchAiVoiceAudio(cText, aiSoundConfig.voiceName, false);
+      }
+      if (aiSoundConfig.wrongPhrase.trim()) {
+        const wText = resolveAnswerFeedbackText(aiSoundConfig.wrongPhrase, pName, false);
+        void fetchAiVoiceAudio(wText, aiSoundConfig.voiceName, false);
+      }
+    });
+  }, [
+    aiSoundConfig.answerFeedbackEnabled,
+    aiSoundConfig.correctPhrase,
+    aiSoundConfig.voiceName,
+    aiSoundConfig.wrongPhrase,
+    blueTurnIndex,
+    coralTurnIndex,
+    fetchAiVoiceAudio,
+    mode,
+    muted,
+    phase,
+    resolvedBluePlayers,
+    resolvedCoralPlayers,
+  ]);
 
   const handleTestAiVoice = async () => {
     setAiVoiceError(null);
@@ -621,21 +685,23 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   const handleTestAnswerFeedback = async (kind: 'CORRECT' | 'WRONG') => {
     setAiVoiceError(null);
     soundFx.unlock();
-    const phrase = (
+    const template = (
       kind === 'CORRECT' ? aiSoundConfig.correctPhrase : aiSoundConfig.wrongPhrase
     ).trim();
-    if (!phrase) return;
+    if (!template) return;
+    const samplePlayer = resolvedBluePlayers[0] || 'Yura';
+    const spokenText = resolveAnswerFeedbackText(template, samplePlayer, kind === 'CORRECT');
     setTestingFeedbackKind(kind);
     try {
       if (muted) {
         setMuted(false);
         soundFx.setMuted(false);
       }
-      const clip = await fetchAiVoiceAudio(phrase, aiSoundConfig.voiceName, true);
+      const clip = await fetchAiVoiceAudio(spokenText, aiSoundConfig.voiceName, true);
       if (clip) {
         await soundFx.playBase64Wav(clip.audioBase64, clip.mimeType);
       } else {
-        soundFx.speakPhrase(phrase);
+        soundFx.speakPhrase(spokenText);
       }
     } finally {
       setTestingFeedbackKind(null);
@@ -781,6 +847,7 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
         groupFilter
       );
 
+      matchEpochRef.current += 1;
       setRopePosition(0);
       setLastPuller(null);
       setLastEventText('Match Started — First Pull!');
@@ -800,6 +867,8 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
       setBotProgress(0);
       setBlueLockedUntil(0);
       setCoralLockedUntil(0);
+      setBlueMissedBy(null);
+      setCoralMissedBy(null);
       setCompletedSession(null);
       setShowWinPopup(false);
       setIsPaused(false);
@@ -819,23 +888,6 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
         );
         void fetchAiVoiceAudio(blueClipText, aiSoundConfig.voiceName, false);
         void fetchAiVoiceAudio(coralClipText, aiSoundConfig.voiceName, false);
-      }
-
-      if (aiSoundConfig.answerFeedbackEnabled && !muted) {
-        if (aiSoundConfig.correctPhrase.trim()) {
-          void fetchAiVoiceAudio(
-            aiSoundConfig.correctPhrase.trim(),
-            aiSoundConfig.voiceName,
-            false
-          );
-        }
-        if (aiSoundConfig.wrongPhrase.trim()) {
-          void fetchAiVoiceAudio(
-            aiSoundConfig.wrongPhrase.trim(),
-            aiSoundConfig.voiceName,
-            false
-          );
-        }
       }
 
       const now = Date.now();
@@ -908,6 +960,8 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
         label: questionLabel,
       });
 
+      const epochAtAnswer = matchEpochRef.current;
+
       if (isCorrect) {
         const nextStreak = blueStreak + 1;
         const nextMaxStreak = Math.max(maxStreak, nextStreak);
@@ -926,16 +980,18 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
             : `${currentPlayerName} Pulls! (${resolvedBlueLabel})`
         );
         soundFx.playPullCorrect(nextStreak);
-        playAnswerVoiceFeedback(true);
+        playAnswerVoiceFeedback(true, currentPlayerName);
 
         if (nextRope <= -maxSteps) {
           setTimeout(() => {
+            if (matchEpochRef.current !== epochAtAnswer) return;
             finishMatch('BLUE', nextAttempts, nextBluePulls, coralPulls, nextMaxStreak);
           }, 420);
           return;
         }
 
         setTimeout(() => {
+          if (matchEpochRef.current !== epochAtAnswer) return;
           setSoloFeedback(null);
           setShowHint(false);
           setUsedHintOnCurrent(false);
@@ -968,16 +1024,18 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
           setShowHint(true);
         }
         soundFx.playMiss();
-        playAnswerVoiceFeedback(false);
+        playAnswerVoiceFeedback(false, currentPlayerName);
 
         if (nextRope >= maxSteps) {
           setTimeout(() => {
+            if (matchEpochRef.current !== epochAtAnswer) return;
             finishMatch('CORAL', nextAttempts, bluePulls, nextCoralPulls, maxStreak);
           }, 600);
           return;
         }
 
         setTimeout(() => {
+          if (matchEpochRef.current !== epochAtAnswer) return;
           setSoloFeedback(null);
           setShowHint(false);
           setUsedHintOnCurrent(false);
@@ -1078,9 +1136,10 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
           setBluePulls(nextBluePulls);
           setRopePosition(nextRope);
           setLastPuller('BLUE');
+          setBlueMissedBy(null);
           setLastEventText(`${activePlayerName} Pulls! (${resolvedBlueLabel})`);
           soundFx.playPullCorrect(nextStreak);
-          playAnswerVoiceFeedback(true);
+          playAnswerVoiceFeedback(true, activePlayerName);
 
           if (nextRope <= -maxSteps) {
             finishMatch('BLUE', nextAttempts, nextBluePulls, coralPulls, nextMax);
@@ -1107,9 +1166,10 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
           setCoralPulls(nextCoralPulls);
           setRopePosition(nextRope);
           setLastPuller('CORAL');
+          setCoralMissedBy(null);
           setLastEventText(`${activePlayerName} Pulls! (${resolvedCoralLabel})`);
           soundFx.playPullCorrect(nextStreak);
-          playAnswerVoiceFeedback(true);
+          playAnswerVoiceFeedback(true, activePlayerName);
 
           if (nextRope >= maxSteps) {
             finishMatch('CORAL', nextAttempts, bluePulls, nextCoralPulls, maxStreak);
@@ -1130,15 +1190,40 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
         }
       } else {
         soundFx.playMiss();
-        playAnswerVoiceFeedback(false);
+        playAnswerVoiceFeedback(false, activePlayerName);
+        // Sequential group play: advance to the next team member & next question even when wrong
         if (player === 'BLUE') {
           setBlueStreak(0);
+          setBlueMissedBy(activePlayerName);
           setBlueLockedUntil(now + 950);
-          setLastEventText(`${activePlayerName} Missed — 1s Pause`);
+          setLastEventText(`${activePlayerName} Missed — Next Player Up!`);
+          setBlueTurnIndex((idx) => (idx + 1) % resolvedBluePlayers.length);
+          setBlueQuestion(
+            generateQuestion(
+              tier,
+              missedPairs,
+              question.prompt ?? `${question.a}+${question.b}`,
+              customQuestions,
+              selectedCustomGroup
+            )
+          );
+          blueStartRef.current = Date.now() + 950;
         } else {
           setCoralStreak(0);
+          setCoralMissedBy(activePlayerName);
           setCoralLockedUntil(now + 950);
-          setLastEventText(`${activePlayerName} Missed — 1s Pause`);
+          setLastEventText(`${activePlayerName} Missed — Next Player Up!`);
+          setCoralTurnIndex((idx) => (idx + 1) % resolvedCoralPlayers.length);
+          setCoralQuestion(
+            generateQuestion(
+              tier,
+              missedPairs,
+              question.prompt ?? `${question.a}+${question.b}`,
+              customQuestions,
+              selectedCustomGroup
+            )
+          );
+          coralStartRef.current = Date.now() + 950;
         }
       }
     },
@@ -1994,7 +2079,9 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                       Answer Voice Feedback (Correct / Wrong)
                     </div>
                     <p className="mt-0.5 text-[11px] text-slate-500">
-                      Speaks encouragement when a player answers right or wrong during play.
+                      Speaks the answering player&apos;s name (use{' '}
+                      <span className="font-mono font-semibold text-slate-700">{'{player}'}</span>{' '}
+                      or it is added automatically, e.g. &ldquo;Good job, Yura!&rdquo;).
                     </p>
                   </div>
                   <button
@@ -2936,8 +3023,13 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
             </div>
 
             {blueLocked ? (
-              <div className="flex min-h-[144px] items-center justify-center rounded-xl border border-rose-200 bg-rose-50 text-sm font-semibold text-rose-700">
-                {activeBluePlayerName} missed — brief 1s pause
+              <div className="flex min-h-[144px] flex-col items-center justify-center gap-1 rounded-xl border border-rose-200 bg-rose-50 px-4 text-center text-sm font-semibold text-rose-700">
+                <span>{blueMissedBy || activeBluePlayerName} missed — brief 1s pause</span>
+                {resolvedBluePlayers.length > 1 && (
+                  <span className="text-xs font-medium text-rose-600">
+                    Next turn ready: {activeBluePlayerName}
+                  </span>
+                )}
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-3">
@@ -2998,8 +3090,13 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
             </div>
 
             {coralLocked ? (
-              <div className="flex min-h-[144px] items-center justify-center rounded-xl border border-rose-200 bg-rose-50 text-sm font-semibold text-rose-700">
-                {activeCoralPlayerName} missed — brief 1s pause
+              <div className="flex min-h-[144px] flex-col items-center justify-center gap-1 rounded-xl border border-rose-200 bg-rose-50 px-4 text-center text-sm font-semibold text-rose-700">
+                <span>{coralMissedBy || activeCoralPlayerName} missed — brief 1s pause</span>
+                {resolvedCoralPlayers.length > 1 && (
+                  <span className="text-xs font-medium text-rose-600">
+                    Next turn ready: {activeCoralPlayerName}
+                  </span>
+                )}
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-3">
