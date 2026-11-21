@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import type { User } from 'firebase/auth';
 import {
   ClipboardPaste,
   Folder,
@@ -10,6 +11,13 @@ import {
   Plus,
   X,
   ImagePlus,
+  Cloud,
+  Link2,
+  Download,
+  Upload,
+  LogIn,
+  LogOut,
+  Loader2,
 } from 'lucide-react';
 import {
   CustomQuestion,
@@ -23,10 +31,24 @@ import {
   makeEmptyChoices,
   parsePastedQuestions,
 } from '../utils/mathEngine';
+import {
+  encodeSharedFolderUrl,
+  exportQuestionsJsonFile,
+  parseImportedQuestionsJson,
+} from '../utils/cloudSync';
 
 interface QuestionBankViewProps {
   questions: CustomQuestion[];
-  onSaveQuestions: (newItems: CustomQuestion[]) => void;
+  user: User | null;
+  unsyncedCount: number;
+  cloudSyncBusy: boolean;
+  cloudMessage: string | null;
+  cloudError: string | null;
+  onSignIn: () => void;
+  onSignOut: () => void;
+  onSyncLocalToCloud: () => void;
+  onImportQuestions: (imported: CustomQuestion[]) => Promise<void> | void;
+  onSaveQuestions: (newItems: CustomQuestion[]) => Promise<void> | void;
   onToggleQuestionActive: (id: string) => void;
   onToggleGroupActive: (groupType: QuestionGroupType, groupName: string, active: boolean) => void;
   onDeleteQuestion: (id: string) => void;
@@ -51,8 +73,19 @@ D) 17`;
 
 const OPTION_LETTERS = ['A', 'B', 'C', 'D'];
 
+const VERCEL_DOMAIN_KEY = 'ropesum_share_base_url_v1';
+
 export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   questions,
+  user,
+  unsyncedCount,
+  cloudSyncBusy,
+  cloudMessage,
+  cloudError,
+  onSignIn,
+  onSignOut,
+  onSyncLocalToCloud,
+  onImportQuestions,
   onSaveQuestions,
   onToggleQuestionActive,
   onToggleGroupActive,
@@ -83,6 +116,16 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   const [saveAsActive, setSaveAsActive] = useState<boolean>(true);
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
+
+  // Cross-domain / Vercel share controls
+  const [shareBaseUrl, setShareBaseUrl] = useState<string>(() => {
+    try {
+      return localStorage.getItem(VERCEL_DOMAIN_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
+  const [shareFeedback, setShareFeedback] = useState<string | null>(null);
 
   // Library filter state
   const [filterMode, setFilterMode] = useState<'ALL' | 'ACTIVE' | string>('ALL');
@@ -362,6 +405,53 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
     return existingGroups.find((g) => `${g.groupType}::${g.groupName}` === filterMode) ?? null;
   }, [existingGroups, filterMode]);
 
+  const handleImportJsonFile = async (file?: File) => {
+    if (!file) return;
+    setShareFeedback(null);
+    try {
+      const text = await file.text();
+      const imported = parseImportedQuestionsJson(text);
+      if (imported.length === 0) {
+        setShareFeedback('No valid questions found in that JSON file.');
+        return;
+      }
+      await onImportQuestions(imported);
+      setShareFeedback(
+        `Imported ${imported.length} ${imported.length === 1 ? 'question' : 'questions'} to Active Pool.`
+      );
+    } catch {
+      setShareFeedback('Could not read that file. Please select a valid .ropesum.json export.');
+    }
+  };
+
+  const handleCopyGroupShareLink = async (
+    grpType: QuestionGroupType,
+    grpName: string
+  ) => {
+    const grpQuestions = questions.filter(
+      (q) => q.groupType === grpType && q.groupName === grpName
+    );
+    if (grpQuestions.length === 0) return;
+
+    const targetOrigin = shareBaseUrl.trim() || window.location.origin;
+    const { url, truncated } = encodeSharedFolderUrl(
+      targetOrigin,
+      grpType,
+      grpName,
+      grpQuestions
+    );
+    try {
+      await navigator.clipboard.writeText(url);
+      setShareFeedback(
+        truncated
+          ? `Copied share link for "${grpName}" (long URL — for large sets or images, use Export JSON).`
+          : `Copied share link for "${grpName}". Open it on Vercel or any browser to load this folder immediately.`
+      );
+    } catch {
+      setShareFeedback(`Share link ready: ${url.slice(0, 80)}...`);
+    }
+  };
+
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       {/* Page Header */}
@@ -369,7 +459,7 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Question Bank &amp; Customizer</h1>
           <p className="mt-1 text-sm text-slate-600">
-            Copy-paste multiple-choice questions or customize questions with pictures for prompts and options, then save to a folder or topic.
+            Copy-paste multiple-choice questions or customize questions with pictures, save to a folder or topic, and sync across AI Studio &amp; Vercel.
           </p>
         </div>
 
@@ -381,6 +471,93 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
           <Play className="h-4 w-4" />
           Play Active Questions ({activeCount})
         </button>
+      </div>
+
+      {/* Cloud Sync & Cross-Domain Vercel Sharing Bar */}
+      <div className="rounded-xl border border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <Cloud className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />
+            <div>
+              <div className="text-xs font-semibold text-slate-900">
+                {user
+                  ? `Cloud Sync Active (${user.email || 'Signed In'})`
+                  : 'Sync Folders Across AI Studio & Vercel'}
+              </div>
+              <p className="mt-0.5 text-[11px] text-slate-500">
+                {user
+                  ? 'Active folders are published to Cloud Firestore so opening your Vercel link loads them automatically.'
+                  : 'Sign in with Google to save active folders to Cloud (available on Vercel automatically), or import/export a folder JSON.'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {user && unsyncedCount > 0 && (
+              <button
+                type="button"
+                onClick={onSyncLocalToCloud}
+                disabled={cloudSyncBusy}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+              >
+                {cloudSyncBusy ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Cloud className="h-3.5 w-3.5" />
+                )}
+                Sync {unsyncedCount} Local {unsyncedCount === 1 ? 'Question' : 'Questions'} to Cloud
+              </button>
+            )}
+
+            <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+              <Upload className="h-3.5 w-3.5 text-blue-600" />
+              <span>Import Folder JSON</span>
+              <input
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={(e) => {
+                  void handleImportJsonFile(e.target.files?.[0]);
+                  e.target.value = '';
+                }}
+              />
+            </label>
+
+            {user ? (
+              <button
+                type="button"
+                onClick={onSignOut}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+                Sign Out
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onSignIn}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+              >
+                <LogIn className="h-3.5 w-3.5" />
+                Sign in with Google
+              </button>
+            )}
+          </div>
+        </div>
+
+        {(cloudMessage || cloudError || shareFeedback) && (
+          <div className="mt-2.5 space-y-1">
+            {cloudMessage && (
+              <p className="text-xs font-medium text-emerald-700">{cloudMessage}</p>
+            )}
+            {shareFeedback && (
+              <p className="text-xs font-medium text-blue-700">{shareFeedback}</p>
+            )}
+            {cloudError && (
+              <p className="text-xs font-medium text-rose-700">{cloudError}</p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Importer / Custom Builder + Folder/Topic Save Panel */}
@@ -1019,44 +1196,93 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
           </div>
         </div>
 
-        {/* Group Bulk Controls */}
+        {/* Group Bulk Controls + Vercel Share Link & Export */}
         {activeFilterGroup && (
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs">
-            <div className="font-semibold text-slate-800">
-              {activeFilterGroup.groupType === 'FOLDER' ? 'Folder' : 'Topic'}: {activeFilterGroup.groupName}
-              <span className="ml-2 font-normal text-slate-500 tabular-nums">
-                · {activeFilterGroup.active} of {activeFilterGroup.total} active
-              </span>
+          <div className="mt-4 space-y-2.5 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="font-semibold text-slate-800">
+                {activeFilterGroup.groupType === 'FOLDER' ? 'Folder' : 'Topic'}: {activeFilterGroup.groupName}
+                <span className="ml-2 font-normal text-slate-500 tabular-nums">
+                  · {activeFilterGroup.active} of {activeFilterGroup.total} active
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    void handleCopyGroupShareLink(
+                      activeFilterGroup.groupType,
+                      activeFilterGroup.groupName
+                    )
+                  }
+                  className="inline-flex items-center gap-1 rounded border border-blue-200 bg-blue-50 px-2.5 py-1 font-semibold text-blue-700 hover:bg-blue-100"
+                >
+                  <Link2 className="h-3.5 w-3.5" />
+                  Copy Share Link
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    exportQuestionsJsonFile(
+                      activeFilterGroup.groupName,
+                      filteredQuestions
+                    )
+                  }
+                  className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Export JSON
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onToggleGroupActive(activeFilterGroup.groupType, activeFilterGroup.groupName, true)
+                  }
+                  className="rounded border border-slate-200 bg-white px-2.5 py-1 font-semibold text-emerald-700 hover:bg-emerald-50"
+                >
+                  Activate All
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onToggleGroupActive(activeFilterGroup.groupType, activeFilterGroup.groupName, false)
+                  }
+                  className="rounded border border-slate-200 bg-white px-2.5 py-1 font-semibold text-slate-600 hover:bg-slate-100"
+                >
+                  Deactivate All
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onDeleteGroup(activeFilterGroup.groupType, activeFilterGroup.groupName);
+                    setFilterMode('ALL');
+                  }}
+                  className="rounded border border-slate-200 bg-white px-2.5 py-1 font-semibold text-rose-700 hover:bg-rose-50"
+                >
+                  Delete Group
+                </button>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() =>
-                  onToggleGroupActive(activeFilterGroup.groupType, activeFilterGroup.groupName, true)
-                }
-                className="rounded border border-slate-200 bg-white px-2.5 py-1 font-semibold text-emerald-700 hover:bg-emerald-50"
-              >
-                Activate All
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  onToggleGroupActive(activeFilterGroup.groupType, activeFilterGroup.groupName, false)
-                }
-                className="rounded border border-slate-200 bg-white px-2.5 py-1 font-semibold text-slate-600 hover:bg-slate-100"
-              >
-                Deactivate All
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  onDeleteGroup(activeFilterGroup.groupType, activeFilterGroup.groupName);
-                  setFilterMode('ALL');
+
+            <div className="flex flex-wrap items-center gap-2 border-t border-slate-200/70 pt-2">
+              <span className="text-[11px] font-medium text-slate-600">
+                Target Vercel URL (optional):
+              </span>
+              <input
+                type="url"
+                value={shareBaseUrl}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setShareBaseUrl(val);
+                  try {
+                    localStorage.setItem(VERCEL_DOMAIN_KEY, val);
+                  } catch {
+                    // Ignore
+                  }
                 }}
-                className="rounded border border-slate-200 bg-white px-2.5 py-1 font-semibold text-rose-700 hover:bg-rose-50"
-              >
-                Delete Group
-              </button>
+                placeholder="https://your-app.vercel.app (blank = current domain)"
+                className="min-w-[240px] flex-1 rounded border border-slate-200 bg-white px-2.5 py-1 text-[11px] text-slate-800 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none"
+              />
             </div>
           </div>
         )}
@@ -1098,8 +1324,19 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
                       )}
                       <div>
                         <div className="font-semibold text-slate-900">{q.prompt}</div>
-                        <div className="mt-0.5 text-xs text-slate-500">
-                          {q.groupType === 'FOLDER' ? 'Folder' : 'Topic'} · {q.groupName}
+                        <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                          <span>
+                            {q.groupType === 'FOLDER' ? 'Folder' : 'Topic'} · {q.groupName}
+                          </span>
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                              q.ownerId
+                                ? 'bg-blue-50 text-blue-700'
+                                : 'bg-amber-50 text-amber-700'
+                            }`}
+                          >
+                            {q.ownerId ? 'Cloud Synced' : 'Local Only'}
+                          </span>
                         </div>
                       </div>
                     </div>

@@ -1,0 +1,191 @@
+{
+  "entities": {
+    "QuestionFolder": {
+      "title": "QuestionFolder",
+      "description": "A named folder or topic containing custom RopeSum questions.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique folder document identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the teacher or creator.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "groupType": {
+          "type": "string",
+          "enum": ["FOLDER", "TOPIC"],
+          "description": "Whether this group is organized as a Folder or Topic."
+        },
+        "groupName": {
+          "type": "string",
+          "description": "Display name of the folder or topic.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "isActive": {
+          "type": "boolean",
+          "description": "Whether questions in this folder are active for arena play."
+        },
+        "isPublished": {
+          "type": "boolean",
+          "description": "Whether this folder is shared publicly for cross-domain play links."
+        },
+        "isPublicActive": {
+          "type": "boolean",
+          "description": "Computed invariant matching isActive && isPublished."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when last updated."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "groupType",
+        "groupName",
+        "isActive",
+        "isPublished",
+        "isPublicActive",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CustomQuestion": {
+      "title": "CustomQuestion",
+      "description": "An individual multiple-choice question synced across domains for RopeSum matches.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique question document identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "folderId": {
+          "type": "string",
+          "description": "Reference ID of the parent QuestionFolder.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the question owner.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Question prompt text.",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "promptImageUrl": {
+          "type": "string",
+          "description": "Optional compressed data URL for a question image.",
+          "maxLength": 200000
+        },
+        "a": {
+          "type": "number",
+          "description": "Optional first numeric operand."
+        },
+        "b": {
+          "type": "number",
+          "description": "Optional second numeric operand."
+        },
+        "answer": {
+          "type": "string",
+          "description": "Correct answer label.",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "choices": {
+          "type": "array",
+          "description": "Up to 4 multiple-choice options."
+        },
+        "correctChoiceIndex": {
+          "type": "integer",
+          "description": "Index (0-3) of the correct option."
+        },
+        "groupType": {
+          "type": "string",
+          "enum": ["FOLDER", "TOPIC"],
+          "description": "Group classification matching parent folder."
+        },
+        "groupName": {
+          "type": "string",
+          "description": "Group name matching parent folder.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "isActive": {
+          "type": "boolean",
+          "description": "Whether this question is active in the Play Arena pool."
+        },
+        "isPublished": {
+          "type": "boolean",
+          "description": "Whether this question is shared for cross-domain play."
+        },
+        "isPublicActive": {
+          "type": "boolean",
+          "description": "Computed invariant matching isActive && isPublished."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when last updated."
+        }
+      },
+      "required": [
+        "id",
+        "folderId",
+        "ownerId",
+        "prompt",
+        "answer",
+        "choices",
+        "correctChoiceIndex",
+        "groupType",
+        "groupName",
+        "isActive",
+        "isPublished",
+        "isPublicActive",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/question_folders/{folderId}": {
+      "schema": {
+        "$ref": "#/entities/QuestionFolder"
+      },
+      "description": "Question folders and topics created by teachers and optionally published for cross-domain play."
+    },
+    "/custom_questions/{questionId}": {
+      "schema": {
+        "$ref": "#/entities/CustomQuestion"
+      },
+      "description": "Individual multiple-choice questions belonging to a QuestionFolder."
+    }
+  }
+}

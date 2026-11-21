@@ -1,0 +1,204 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidQuestionFolder(data, folderId) {
+      return data.keys().hasAll([
+        'id',
+        'ownerId',
+        'groupType',
+        'groupName',
+        'isActive',
+        'isPublished',
+        'isPublicActive',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id',
+        'ownerId',
+        'groupType',
+        'groupName',
+        'isActive',
+        'isPublished',
+        'isPublicActive',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.id == folderId &&
+      data.ownerId is string &&
+      data.ownerId == request.auth.uid &&
+      data.groupType in ['FOLDER', 'TOPIC'] &&
+      data.groupName is string &&
+      data.groupName.size() >= 1 &&
+      data.groupName.size() <= 120 &&
+      data.isActive is bool &&
+      data.isPublished is bool &&
+      data.isPublicActive is bool &&
+      data.isPublicActive == (data.isActive && data.isPublished) &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidCustomQuestion(data, questionId) {
+      return data.keys().hasAll([
+        'id',
+        'folderId',
+        'ownerId',
+        'prompt',
+        'answer',
+        'choices',
+        'correctChoiceIndex',
+        'groupType',
+        'groupName',
+        'isActive',
+        'isPublished',
+        'isPublicActive',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id',
+        'folderId',
+        'ownerId',
+        'prompt',
+        'promptImageUrl',
+        'a',
+        'b',
+        'answer',
+        'choices',
+        'correctChoiceIndex',
+        'groupType',
+        'groupName',
+        'isActive',
+        'isPublished',
+        'isPublicActive',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.id == questionId &&
+      isValidId(data.folderId) &&
+      data.ownerId is string &&
+      data.ownerId == request.auth.uid &&
+      data.prompt is string &&
+      data.prompt.size() >= 1 &&
+      data.prompt.size() <= 1000 &&
+      (!('promptImageUrl' in data) || (data.promptImageUrl is string && data.promptImageUrl.size() <= 200000)) &&
+      (!('a' in data) || data.a is number) &&
+      (!('b' in data) || data.b is number) &&
+      data.answer is string &&
+      data.answer.size() >= 1 &&
+      data.answer.size() <= 300 &&
+      data.choices is list &&
+      data.choices.size() >= 2 &&
+      data.choices.size() <= 4 &&
+      data.choices[0] is map &&
+      data.choices[1] is map &&
+      data.correctChoiceIndex is int &&
+      data.correctChoiceIndex >= 0 &&
+      data.correctChoiceIndex < data.choices.size() &&
+      data.groupType in ['FOLDER', 'TOPIC'] &&
+      data.groupName is string &&
+      data.groupName.size() >= 1 &&
+      data.groupName.size() <= 120 &&
+      data.isActive is bool &&
+      data.isPublished is bool &&
+      data.isPublicActive is bool &&
+      data.isPublicActive == (data.isActive && data.isPublished) &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    match /question_folders/{folderId} {
+      allow get: if isValidId(folderId) && (
+        existing().isPublicActive == true ||
+        (isSignedIn() && existing().ownerId == request.auth.uid)
+      );
+
+      allow list: if existing().isPublicActive == true ||
+        (isSignedIn() && existing().ownerId == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(folderId) &&
+        isValidQuestionFolder(incoming(), folderId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser() &&
+        isValidId(folderId) &&
+        existing().ownerId == request.auth.uid &&
+        isValidQuestionFolder(incoming(), folderId) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['isActive', 'isPublished', 'isPublicActive', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['groupType', 'groupName', 'updatedAt'])
+        );
+
+      allow delete: if isVerifiedUser() &&
+        isValidId(folderId) &&
+        existing().ownerId == request.auth.uid;
+    }
+
+    match /custom_questions/{questionId} {
+      allow get: if isValidId(questionId) && (
+        existing().isPublicActive == true ||
+        (isSignedIn() && existing().ownerId == request.auth.uid)
+      );
+
+      allow list: if existing().isPublicActive == true ||
+        (isSignedIn() && existing().ownerId == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(questionId) &&
+        isValidCustomQuestion(incoming(), questionId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/question_folders/$(incoming().folderId)) &&
+        getAfter(/databases/$(database)/documents/question_folders/$(incoming().folderId)).data.ownerId == request.auth.uid;
+
+      allow update: if isVerifiedUser() &&
+        isValidId(questionId) &&
+        existing().ownerId == request.auth.uid &&
+        isValidCustomQuestion(incoming(), questionId) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().folderId == existing().folderId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['isActive', 'isPublished', 'isPublicActive', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['prompt', 'promptImageUrl', 'answer', 'choices', 'correctChoiceIndex', 'updatedAt'])
+        );
+
+      allow delete: if isVerifiedUser() &&
+        isValidId(questionId) &&
+        existing().ownerId == request.auth.uid;
+    }
+  }
+}

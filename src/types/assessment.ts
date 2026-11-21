@@ -29,6 +29,8 @@ export interface QuestionChoice {
 
 export interface CustomQuestion {
   id: string;
+  folderId?: string;
+  ownerId?: string;
   prompt: string;
   promptImageUrl?: string;
   a?: number;
@@ -39,6 +41,7 @@ export interface CustomQuestion {
   groupType: QuestionGroupType;
   groupName: string;
   isActive: boolean;
+  isPublished?: boolean;
   createdAt: number;
 }
 

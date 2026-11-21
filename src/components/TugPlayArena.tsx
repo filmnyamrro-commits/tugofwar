@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { User } from 'firebase/auth';
 import {
   Volume2,
   VolumeX,
@@ -19,6 +20,8 @@ import {
   Sparkles,
   Loader2,
   BellRing,
+  Upload,
+  LogIn,
 } from 'lucide-react';
 import {
   AdditionQuestion,
@@ -40,6 +43,7 @@ import {
   getStrategyTip,
   summarizeAttempts,
 } from '../utils/mathEngine';
+import { parseImportedQuestionsJson } from '../utils/cloudSync';
 import { soundFx } from '../utils/soundFx';
 import { TugArenaSvg } from './TugArenaSvg';
 import { TenFrameHint } from './TenFrameHint';
@@ -48,6 +52,10 @@ interface TugPlayArenaProps {
   missedPairs: Array<{ a: number; b: number }>;
   customQuestions: CustomQuestion[];
   initialTier?: CurriculumTier;
+  user?: User | null;
+  cloudMessage?: string | null;
+  onSignIn?: () => void;
+  onImportQuestions?: (imported: CustomQuestion[]) => Promise<void> | void;
   onSessionComplete: (session: MatchSession) => void;
   onViewReport: () => void;
   onOpenQuestionBank: () => void;
@@ -122,6 +130,10 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
   missedPairs,
   customQuestions,
   initialTier,
+  user,
+  cloudMessage,
+  onSignIn,
+  onImportQuestions,
   onSessionComplete,
   onViewReport,
   onOpenQuestionBank,
@@ -1411,6 +1423,12 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                 ))}
               </div>
 
+              {cloudMessage && (
+                <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800">
+                  {cloudMessage}
+                </div>
+              )}
+
               {activeCustomGroups.length > 0 ? (
                 <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50/70 p-3">
                   <div className="flex items-center justify-between gap-2">
@@ -1498,19 +1516,56 @@ export const TugPlayArena: React.FC<TugPlayArenaProps> = ({
                   </div>
                 </div>
               ) : (
-                <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-dashed border-slate-200 bg-slate-50/50 px-3 py-2 text-xs text-slate-500">
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/50 px-3 py-2.5 text-xs text-slate-500">
                   <span>
                     {customQuestions.length > 0
                       ? 'No active question folders — activate a folder in Question Bank to play it here.'
-                      : 'No custom question folders active yet.'}
+                      : 'No custom question folders active on this domain yet.'}
                   </span>
-                  <button
-                    type="button"
-                    onClick={onOpenQuestionBank}
-                    className="shrink-0 font-semibold text-blue-600 hover:text-blue-700"
-                  >
-                    Open Question Bank
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {onImportQuestions && (
+                      <label className="inline-flex cursor-pointer items-center gap-1 rounded border border-slate-200 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-50">
+                        <Upload className="h-3 w-3 text-blue-600" />
+                        <span>Import JSON</span>
+                        <input
+                          type="file"
+                          accept=".json,application/json"
+                          className="hidden"
+                          onChange={async (e) => {
+                            const f = e.target.files?.[0];
+                            e.target.value = '';
+                            if (!f) return;
+                            try {
+                              const parsed = parseImportedQuestionsJson(await f.text());
+                              if (parsed.length > 0) {
+                                await onImportQuestions(parsed);
+                                setTier('CUSTOM_ACTIVE');
+                              }
+                            } catch {
+                              // Ignore invalid file
+                            }
+                          }}
+                        />
+                      </label>
+                    )}
+                    {!user && onSignIn && (
+                      <button
+                        type="button"
+                        onClick={onSignIn}
+                        className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2.5 py-1 font-semibold text-slate-800 hover:bg-slate-50"
+                      >
+                        <LogIn className="h-3 w-3" />
+                        Sign in for Cloud
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={onOpenQuestionBank}
+                      className="shrink-0 font-semibold text-blue-600 hover:text-blue-700"
+                    >
+                      Open Question Bank
+                    </button>
+                  </div>
                 </div>
               )}
 
